@@ -1,6 +1,8 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { Config, JsonDB } from 'node-json-db';
+import { RuntimeService } from '../common/runtime/runtime.service.js';
+import { random } from '../util/random.js';
 import {
   CreateJob,
   EditJob,
@@ -13,7 +15,7 @@ import {
 @Injectable()
 export class JobsService {
   private readonly db = new JsonDB(new Config('data/jobs', true, false, '/'));
-  constructor() {}
+  constructor(private runtimeSVC: RuntimeService) {}
 
   async create(data: CreateJob) {
     try {
@@ -22,6 +24,8 @@ export class JobsService {
         title: data.title,
         description: data.description,
         status: JobStatus.waiting,
+        reservationTime: random(1, 10),
+        processingTime: random(5, 20) + this.runtimeSVC.getRunningSec(),
       });
     } catch (error) {
       console.error(error);

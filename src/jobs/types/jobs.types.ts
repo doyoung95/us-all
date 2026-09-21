@@ -8,6 +8,11 @@ export type Job = {
   title: string;
   description?: string;
   status: JobStatus;
+
+  // 서버 시작 후 몇 sec 뒤에 실행 가능한지
+  reservationTime: number;
+  // 처리하는데 걸리는 sec
+  processingTime: number;
 };
 
 export type CreateJob = {
