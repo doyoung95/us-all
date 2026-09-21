@@ -38,7 +38,7 @@ export class JobsService {
 
   async putRecover(job: Job) {
     const { idx } = await this.getJob(job.id);
-    this.db.push(`/list[${idx}]`, job, true);
+    await this.db.push(`/list[${idx}]`, job, true);
   }
 
   async editStatusByIdx(idx: number, status: JobStatus) {

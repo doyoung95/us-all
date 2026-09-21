@@ -127,6 +127,14 @@ describe('JobsService', () => {
     });
   });
 
+  it('putRecover 는 job 을 통째로 교체한다', async () => {
+    await seed([job({ title: '변경된 제목', status: JobStatus.pending })]);
+
+    await service.putRecover(job({ title: '원본 제목' }));
+
+    expect(await find()).toEqual(job({ title: '원본 제목' }));
+  });
+
   it('없는 id 를 조회하면 NotFoundException 을 던진다', async () => {
     await seed([job()]);
 

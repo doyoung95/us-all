@@ -64,10 +64,9 @@ export class JobsScheduler {
     await this.mutexManager.run(job.id, async () => {
       const { idx, job: lockedJob } = await this.jobsSVC.getJob(job.id);
       // TODO 취소된 케이스 원복 필요
-      if (lockedJob.status !== JobStatus.pending) {
-        return;
+      if (lockedJob.status === JobStatus.pending) {
+        await this.jobsSVC.editStatusByIdx(idx, JobStatus.completed);
       }
-      await this.jobsSVC.editStatusByIdx(idx, JobStatus.completed);
       await this.recoverSVC.removeRecover(job.id);
     });
   }

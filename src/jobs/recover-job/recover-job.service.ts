@@ -9,7 +9,6 @@ export class RecoverJobService {
   );
   constructor() {}
 
-  // TODO 리커버리 락 필요
   // TODO 사용하지 않는 찌거기 리커버 데이터 cleanup
 
   async onModuleInit() {
