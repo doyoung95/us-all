@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { RuntimeService } from '../common/runtime/runtime.service.js';
 import { MutexManager } from '../util/mutex-manager.js';
+import { JOB_RECOVER_STATUS_TRANSITIONS } from './jobs.constants.js';
 import { JobsService } from './jobs.service.js';
 import { JOB_MUTEX_MANAGER } from './jobs.token.js';
 import { RecoverJobService } from './recover-job/recover-job.service.js';
@@ -27,7 +28,7 @@ export class JobsScheduler {
     return this.recovered;
   }
 
-  // TODO 변경 락 필요
+  // TODO 사용자 취소 요청 리커버 처리 => 리커버 데이터 바탕으로 리커버 작업 필요
   async onApplicationBootstrap() {
     if (!this.isPrimary) return;
     const pendingJobs = await this.jobsSVC.searchJobs({
@@ -35,16 +36,29 @@ export class JobsScheduler {
     });
 
     for (const job of pendingJobs) {
-      const originJob = await this.recoverSVC.getRecover(job.id);
-      if (!originJob) {
-        console.error(`복구 데이터 유실 id: ${job.id}`);
-        continue;
-      }
-      await this.jobsSVC.putRecover({
-        ...originJob,
-        status: JobStatus.waiting,
+      await this.mutexManager.run(job.id, async () => {
+        const { job: lockedJob } = await this.jobsSVC.getJob(job.id);
+
+        const toStatus = JOB_RECOVER_STATUS_TRANSITIONS[lockedJob.status];
+        if (!toStatus) {
+          console.warn(`id: ${job.id} 추적되지 않는 상태 변경 발생`);
+          return;
+        }
+
+        // pending 상태일 경우 waiting으로 원본 복구
+        // cancel 상태일 경우 원본 복구 후 canceled 유지
+
+        const originJob = await this.recoverSVC.getRecover(job.id);
+        if (!originJob) {
+          console.error(`복구 데이터 유실 id: ${job.id}`);
+          return;
+        }
+        await this.jobsSVC.putRecover({
+          ...originJob,
+          status: toStatus,
+        });
+        await this.recoverSVC.removeRecover(job.id);
       });
-      await this.recoverSVC.removeRecover(job.id);
     }
 
     this.recovered = true;
@@ -63,11 +77,28 @@ export class JobsScheduler {
   private async completeJob(job: Job) {
     await this.mutexManager.run(job.id, async () => {
       const { idx, job: lockedJob } = await this.jobsSVC.getJob(job.id);
-      // TODO 취소된 케이스 원복 필요
+      // pending 작업의 경우 완료 처리
       if (lockedJob.status === JobStatus.pending) {
         await this.jobsSVC.editStatusByIdx(idx, JobStatus.completed);
+
+        await this.recoverSVC.removeRecover(job.id);
+        return;
       }
-      await this.recoverSVC.removeRecover(job.id);
+
+      // canceled 작업의 경우 원본 복구 후 canceled 유지
+      if (lockedJob.status === JobStatus.canceled) {
+        const originJob = await this.recoverSVC.getRecover(lockedJob.id);
+        if (!originJob) {
+          console.error(`복구 데이터 유실 id: ${lockedJob.id}`);
+          return;
+        }
+
+        await this.jobsSVC.putRecover({
+          ...originJob,
+          status: JobStatus.canceled,
+        });
+        await this.recoverSVC.removeRecover(job.id);
+      }
     });
   }
 
