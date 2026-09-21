@@ -50,6 +50,18 @@ describe('RecoverJobService', () => {
     );
   });
 
+  it('getRecovers 는 저장된 원본 전체를 배열로 반환한다', async () => {
+    expect(await service.getRecovers()).toEqual([]);
+
+    await service.genRecover(job({ id: 'a' }));
+    await service.genRecover(job({ id: 'b' }));
+
+    expect(await service.getRecovers()).toEqual([
+      job({ id: 'a' }),
+      job({ id: 'b' }),
+    ]);
+  });
+
   it('없는 id 는 조회하면 null, 삭제해도 에러가 나지 않는다', async () => {
     expect(await service.getRecover('none')).toBeNull();
     await expect(service.removeRecover('none')).resolves.toBeUndefined();

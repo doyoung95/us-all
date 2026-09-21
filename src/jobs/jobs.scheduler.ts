@@ -50,7 +50,7 @@ export class JobsScheduler {
             status: toStatus,
           });
           await this.recoverSVC.removeRecover(job.id);
-        } catch (error) {
+        } catch {
           console.error(`recover 실패 id : ${recoverJob.id}`);
         }
       });
@@ -64,8 +64,8 @@ export class JobsScheduler {
       await process(job.processingTime);
 
       await this.completeJob(job);
-    } catch (err) {
-      console.error(err);
+    } catch (error) {
+      console.error(error);
     }
   }
 

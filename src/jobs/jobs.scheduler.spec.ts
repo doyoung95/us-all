@@ -79,54 +79,72 @@ describe('JobsScheduler', () => {
 
   afterAll(() => rmSync(TMP_DIR, { recursive: true, force: true }));
 
+  const newScheduler = () =>
+    new JobsScheduler(runtimeSVC, jobsSVC, recoverSVC, mutexManager);
+
+  const silenceError = async (fn: () => Promise<void>) => {
+    const originalConsoleError = console.error;
+    console.error = () => {};
+    try {
+      await fn();
+    } finally {
+      console.error = originalConsoleError;
+    }
+  };
+
   describe('부팅 리커버리', () => {
-    it('중단된 pending job 을 recover 원본으로 되돌리고 recover 데이터를 지운다', async () => {
-      // 처리 중 서버가 죽어 pending 으로 남고, 값까지 바뀐 상태
-      await seed([
-        job({ id: 'a', title: '변경된 제목', status: JobStatus.pending }),
-        job({ id: 'b', status: JobStatus.waiting }),
-      ]);
-      await recoverSVC.genRecover(job({ id: 'a', title: '원본 제목' }));
+    // JOB_RECOVER_STATUS_TRANSITIONS 기준 (null = 복구 대상 아님)
+    it.each([
+      [JobStatus.pending, JobStatus.waiting],
+      [JobStatus.canceled, JobStatus.canceled],
+      [JobStatus.waiting, null],
+      [JobStatus.completed, null],
+    ])('%s 상태의 job 은 %s 로 복구된다', async (from, to) => {
+      await seed([job({ title: '변경된 제목', status: from })]);
+      await recoverSVC.genRecover(job({ title: '원본 제목' }));
 
-      const booting = new JobsScheduler(
-        runtimeSVC,
-        jobsSVC,
-        recoverSVC,
-        mutexManager,
-      );
+      await newScheduler().onApplicationBootstrap();
 
-      // 리커버리 전에는 tick 이 돌지 않는다
+      if (!to) {
+        // 복구 대상이 아니면 job 도 recover 도 건드리지 않는다
+        expect(await jobOf()).toEqual(
+          job({ title: '변경된 제목', status: from }),
+        );
+        expect(await recoverSVC.getRecover('a')).toEqual(
+          job({ title: '원본 제목' }),
+        );
+        return;
+      }
+
+      expect(await jobOf()).toEqual(job({ title: '원본 제목', status: to }));
+      expect(await recoverSVC.getRecover('a')).toBeNull();
+    });
+
+    it('리커버리가 끝나기 전에는 tick 이 돌지 않는다', async () => {
+      await seed([job()]);
+      const booting = newScheduler();
+
       expect(booting.isRecovered).toBe(false);
       await booting.consume();
-      expect(await statusOf('b')).toBe(JobStatus.waiting);
+      expect(await statusOf()).toBe(JobStatus.waiting);
 
       await booting.onApplicationBootstrap();
-
-      expect(await jobOf('a')).toEqual(job({ id: 'a', title: '원본 제목' }));
-      expect(await recoverSVC.getRecover('a')).toBeNull();
       expect(booting.isRecovered).toBe(true);
     });
 
-    it('recover 데이터가 없는 pending job 은 건너뛴다', async () => {
-      await seed([job({ id: 'a', status: JobStatus.pending })]);
+    it('job 이 없는 recover 데이터는 건너뛰고 나머지를 복구한다', async () => {
+      await seed([job({ id: 'b', status: JobStatus.pending })]);
+      // 'a' 는 job 이 지워져 복구할 대상이 없는 찌꺼기
+      await recoverSVC.genRecover(job({ id: 'a' }));
+      await recoverSVC.genRecover(job({ id: 'b', title: '원본 제목' }));
 
-      const booting = new JobsScheduler(
-        runtimeSVC,
-        jobsSVC,
-        recoverSVC,
-        mutexManager,
+      const booting = newScheduler();
+      await silenceError(() => booting.onApplicationBootstrap());
+
+      expect(await jobOf('b')).toEqual(
+        job({ id: 'b', title: '원본 제목', status: JobStatus.waiting }),
       );
-      const originalConsoleError = console.error;
-      console.error = () => {};
-
-      try {
-        await booting.onApplicationBootstrap();
-      } finally {
-        console.error = originalConsoleError;
-      }
-
-      // 복구할 원본이 없으므로 pending 그대로 둔다
-      expect(await statusOf('a')).toBe(JobStatus.pending);
+      expect(await recoverSVC.getRecover('b')).toBeNull();
       expect(booting.isRecovered).toBe(true);
     });
   });
@@ -169,7 +187,7 @@ describe('JobsScheduler', () => {
       expect(await db.getData('/list')).toEqual(jobs);
     });
 
-    it('처리 중에 취소되면 completed 로 덮어쓰지 않는다', async () => {
+    it('처리 중에 취소되면 원본을 복구하고 canceled 를 유지한다', async () => {
       await seed([job()]);
 
       await scheduler.consume();
@@ -178,8 +196,9 @@ describe('JobsScheduler', () => {
       await new Promise((resolve) =>
         setTimeout(resolve, PROCESSING_SEC * 1000 + 100),
       );
-      expect(await statusOf()).toBe(JobStatus.canceled);
-      // 취소로 완료 처리를 건너뛰어도 recover 찌꺼기는 정리된다
+
+      // completed 로 덮어쓰지 않고, 원본 값으로 되돌린 뒤 canceled 유지
+      expect(await jobOf()).toEqual(job({ status: JobStatus.canceled }));
       expect(await recoverSVC.getRecover('a')).toBeNull();
     });
   });
