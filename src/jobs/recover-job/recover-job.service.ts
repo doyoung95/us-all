@@ -31,6 +31,11 @@ export class RecoverJobService {
     }
   }
 
+  async getRecovers() {
+    const recovers = (await this.db.getData('/list')) as Record<string, Job>;
+    return Object.values(recovers);
+  }
+
   async removeRecover(id: string) {
     try {
       await this.db.delete(`/list/${id}`);

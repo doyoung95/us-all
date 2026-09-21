@@ -28,36 +28,31 @@ export class JobsScheduler {
     return this.recovered;
   }
 
-  // TODO 사용자 취소 요청 리커버 처리 => 리커버 데이터 바탕으로 리커버 작업 필요
   async onApplicationBootstrap() {
     if (!this.isPrimary) return;
-    const pendingJobs = await this.jobsSVC.searchJobs({
-      status: JobStatus.pending,
-    });
 
-    for (const job of pendingJobs) {
-      await this.mutexManager.run(job.id, async () => {
-        const { job: lockedJob } = await this.jobsSVC.getJob(job.id);
+    const recoverJobs = await this.recoverSVC.getRecovers();
 
-        const toStatus = JOB_RECOVER_STATUS_TRANSITIONS[lockedJob.status];
-        if (!toStatus) {
-          console.warn(`id: ${job.id} 추적되지 않는 상태 변경 발생`);
-          return;
+    for (const recoverJob of recoverJobs) {
+      await this.mutexManager.run(recoverJob.id, async () => {
+        try {
+          const { job } = await this.jobsSVC.getJob(recoverJob.id);
+
+          const toStatus = JOB_RECOVER_STATUS_TRANSITIONS[job.status];
+          if (!toStatus) {
+            return;
+          }
+
+          // pending 상태일 경우 waiting으로 원본 복구
+          // cancel 상태일 경우 원본 복구 후 canceled 유지
+          await this.jobsSVC.putRecover({
+            ...recoverJob,
+            status: toStatus,
+          });
+          await this.recoverSVC.removeRecover(job.id);
+        } catch (error) {
+          console.error(`recover 실패 id : ${recoverJob.id}`);
         }
-
-        // pending 상태일 경우 waiting으로 원본 복구
-        // cancel 상태일 경우 원본 복구 후 canceled 유지
-
-        const originJob = await this.recoverSVC.getRecover(job.id);
-        if (!originJob) {
-          console.error(`복구 데이터 유실 id: ${job.id}`);
-          return;
-        }
-        await this.jobsSVC.putRecover({
-          ...originJob,
-          status: toStatus,
-        });
-        await this.recoverSVC.removeRecover(job.id);
       });
     }
 
