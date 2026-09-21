@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   ConflictException,
   Inject,
   Injectable,
@@ -93,23 +92,24 @@ export class JobsService {
     };
   }
 
-  // TODO 여기도 락 상태 문제 발생
   async editJobProperty(id: string, data: EditJobProperty) {
-    const { idx, job } = await this.getJob(id);
+    await this.mutexManager.run(id, async () => {
+      const { idx, job } = await this.getJob(id);
 
-    switch (job.status) {
-      case JobStatus.completed:
-        throw new ConflictException('완료된 작업은 수정할 수 없습니다.');
-      case JobStatus.pending:
-        throw new ConflictException('처리중인 작업은 수정할 수 없습니다.');
-      default:
-    }
+      switch (job.status) {
+        case JobStatus.completed:
+          throw new ConflictException('완료된 작업은 수정할 수 없습니다.');
+        case JobStatus.pending:
+          throw new ConflictException('처리중인 작업은 수정할 수 없습니다.');
+        default:
+      }
 
-    const patchData = Object.fromEntries(
-      Object.entries(data).filter(([_, value]) => value !== undefined),
-    );
+      const patchData = Object.fromEntries(
+        Object.entries(data).filter(([_, value]) => value !== undefined),
+      );
 
-    await this.db.push(`/list[${idx}]`, patchData, false);
+      await this.db.push(`/list[${idx}]`, patchData, false);
+    });
   }
 
   // TODO job 버전 관리 필요
@@ -117,7 +117,7 @@ export class JobsService {
     await this.mutexManager.run(id, async () => {
       const { idx, job } = await this.getJob(id);
       if (!JOB_STATUS_TRANSITIONS[job.status].includes(status)) {
-        throw new BadRequestException(
+        throw new ConflictException(
           ` 올바르지 않은 요청입니다 : can't edit from ${job.status} to ${status}`,
         );
       }

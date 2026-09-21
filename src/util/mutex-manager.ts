@@ -14,7 +14,7 @@ export class MutexManager {
     return mutex;
   }
 
-  async run(key: string, cb: () => Promise<void>) {
+  async run<T = undefined>(key: string, cb: () => Promise<T>) {
     const mutex = this.get(key);
 
     await mutex.acquire();
