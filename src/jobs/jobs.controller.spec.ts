@@ -5,12 +5,21 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { AllExceptionsFilter } from '../common/http-exception.filter.js';
+import { AppLogger } from '../logger/app-logger.service.js';
 import request from 'supertest';
 import { vi } from 'vitest';
 import { JobsController } from './jobs.controller.js';
 import { JobsService } from './jobs.service.js';
 import { Job, JobStatus } from './types/jobs.types.js';
+
+// 실제 logs.txt 를 건드리지 않도록 임시 파일로 돌린다
+const TMP_DIR = mkdtempSync(join(tmpdir(), 'jobs-controller-spec-'));
+process.env.LOG_FILE = join(TMP_DIR, 'logs.txt');
+const logger = new AppLogger();
 
 // ParseUUIDPipe 기본값(v3/v4/v5)을 통과하는 id
 const ID = '11111111-1111-4111-8111-111111111111';
@@ -50,11 +59,16 @@ describe('JobsController', () => {
     app.useGlobalPipes(
       new ValidationPipe({ whitelist: true, transform: true }),
     );
-    app.useGlobalFilters(new AllExceptionsFilter());
+    app.useGlobalFilters(new AllExceptionsFilter(logger));
     await app.init();
   });
 
   afterEach(() => app.close());
+
+  afterAll(async () => {
+    await logger.close();
+    rmSync(TMP_DIR, { recursive: true, force: true });
+  });
 
   const http = () => request(app.getHttpServer());
 

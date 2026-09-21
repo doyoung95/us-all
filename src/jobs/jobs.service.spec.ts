@@ -4,12 +4,17 @@ import { Config, JsonDB } from 'node-json-db';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { RuntimeService } from '../common/runtime/runtime.service.js';
+import { AppLogger } from '../logger/app-logger.service.js';
 import { MutexManager } from '../util/mutex-manager.js';
 import { JobsService } from './jobs.service.js';
 import { Job, JobStatus } from './types/jobs.types.js';
 
 const TMP_DIR = mkdtempSync(join(tmpdir(), 'jobs-service-spec-'));
 let seq = 0;
+
+// 실제 logs.txt 를 건드리지 않도록 임시 파일로 돌린다
+process.env.LOG_FILE = join(TMP_DIR, 'logs.txt');
+const logger = new AppLogger();
 
 const job = (override: Partial<Job> = {}): Job => ({
   id: 'a',
@@ -32,6 +37,7 @@ describe('JobsService', () => {
     service = new JobsService(
       { getRunningSec: () => 0 } as RuntimeService,
       new MutexManager(),
+      logger,
     );
     // 실제 data/jobs.json 대신 테스트마다 새 임시 파일을 쓴다
     db = new JsonDB(new Config(join(TMP_DIR, `db-${seq++}`), true, false, '/'));
@@ -39,7 +45,10 @@ describe('JobsService', () => {
     await service.onModuleInit();
   });
 
-  afterAll(() => rmSync(TMP_DIR, { recursive: true, force: true }));
+  afterAll(async () => {
+    await logger.close();
+    rmSync(TMP_DIR, { recursive: true, force: true });
+  });
 
   describe('searchJobs', () => {
     beforeEach(() =>

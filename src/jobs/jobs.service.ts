@@ -8,6 +8,7 @@ import {
 import { randomUUID } from 'crypto';
 import { Config, JsonDB } from 'node-json-db';
 import { RuntimeService } from '../common/runtime/runtime.service.js';
+import { AppLogger } from '../logger/app-logger.service.js';
 import { MutexManager } from '../util/mutex-manager.js';
 import { random } from '../util/random.js';
 import { JOB_MUTEX_MANAGER } from './jobs.token.js';
@@ -26,6 +27,7 @@ export class JobsService {
     private runtimeSVC: RuntimeService,
     @Inject(JOB_MUTEX_MANAGER)
     private mutexManager: MutexManager,
+    private readonly logger: AppLogger,
   ) {}
 
   async onModuleInit() {
@@ -57,9 +59,16 @@ export class JobsService {
         reservationTime: random(1, 20) + this.runtimeSVC.getRunningSec(),
       };
       await this.db.push('/list[]', job);
+
+      this.logger.log('job.created', {
+        jobId: id,
+        processingTime: job.processingTime,
+        reservationTime: job.reservationTime,
+      });
+
       return job;
     } catch (error) {
-      console.error(error);
+      this.logger.error('job.create.failed', error, { title: data.title });
       throw new InternalServerErrorException();
     }
   }
@@ -115,6 +124,11 @@ export class JobsService {
 
       await this.db.push(`/list[${idx}]`, patchData, false);
 
+      this.logger.log('job.updated', {
+        jobId: id,
+        fields: Object.keys(patchData).join(','),
+      });
+
       return { ...job, ...patchData };
     });
   }
@@ -132,6 +146,8 @@ export class JobsService {
 
       await this.editStatusByIdx(idx, JobStatus.canceled);
 
+      this.logger.log('job.canceled', { jobId: id, from: job.status });
+
       return { ...job, status: JobStatus.canceled };
     });
   }
@@ -144,6 +160,9 @@ export class JobsService {
       }
 
       await this.editStatusByIdx(idx, JobStatus.waiting);
+
+      this.logger.log('job.waiting.restored', { jobId: id });
+
       return { ...job, status: JobStatus.waiting };
     });
   }

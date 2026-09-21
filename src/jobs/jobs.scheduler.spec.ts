@@ -3,6 +3,7 @@ import { Config, JsonDB } from 'node-json-db';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { RuntimeService } from '../common/runtime/runtime.service.js';
+import { AppLogger } from '../logger/app-logger.service.js';
 import { MutexManager } from '../util/mutex-manager.js';
 import { JobsScheduler } from './jobs.scheduler.js';
 import { JobsService } from './jobs.service.js';
@@ -11,6 +12,10 @@ import { Job, JobStatus } from './types/jobs.types.js';
 
 const TMP_DIR = mkdtempSync(join(tmpdir(), 'jobs-scheduler-spec-'));
 let seq = 0;
+
+// 실제 logs.txt 를 건드리지 않도록 임시 파일로 돌린다
+process.env.LOG_FILE = join(TMP_DIR, 'logs.txt');
+const logger = new AppLogger();
 
 // 선점 직후 상태를 확인할 여유는 있으면서, 테스트가 끝나기 전에 처리가 끝나는 길이
 const PROCESSING_SEC = 0.15;
@@ -58,7 +63,7 @@ describe('JobsScheduler', () => {
     // 모듈 설정과 동일하게 service / scheduler 가 같은 MutexManager 를 공유한다
     mutexManager = new MutexManager();
 
-    jobsSVC = new JobsService(runtimeSVC, mutexManager);
+    jobsSVC = new JobsService(runtimeSVC, mutexManager, logger);
     db = tmpDB();
     (jobsSVC as unknown as { db: JsonDB }).db = db;
     await jobsSVC.onModuleInit();
@@ -72,25 +77,19 @@ describe('JobsScheduler', () => {
       jobsSVC,
       recoverSVC,
       mutexManager,
+      logger,
     );
     // 앱 부팅이 끝난 뒤에야 tick 이 돈다
     await scheduler.onApplicationBootstrap();
   });
 
-  afterAll(() => rmSync(TMP_DIR, { recursive: true, force: true }));
+  afterAll(async () => {
+    await logger.close();
+    rmSync(TMP_DIR, { recursive: true, force: true });
+  });
 
   const newScheduler = () =>
-    new JobsScheduler(runtimeSVC, jobsSVC, recoverSVC, mutexManager);
-
-  const silenceError = async (fn: () => Promise<void>) => {
-    const originalConsoleError = console.error;
-    console.error = () => {};
-    try {
-      await fn();
-    } finally {
-      console.error = originalConsoleError;
-    }
-  };
+    new JobsScheduler(runtimeSVC, jobsSVC, recoverSVC, mutexManager, logger);
 
   describe('부팅 리커버리', () => {
     // JOB_RECOVER_STATUS_TRANSITIONS 기준 (null = 복구 대상 아님)
@@ -139,7 +138,7 @@ describe('JobsScheduler', () => {
       await recoverSVC.genRecover(job({ id: 'b', title: '원본 제목' }));
 
       const booting = newScheduler();
-      await silenceError(() => booting.onApplicationBootstrap());
+      await booting.onApplicationBootstrap();
 
       expect(await jobOf('b')).toEqual(
         job({ id: 'b', title: '원본 제목', status: JobStatus.waiting }),
