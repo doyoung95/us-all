@@ -15,14 +15,15 @@ import {
   SearchJobQueryDto,
 } from './dto/jobs.dto.js';
 import { JobsService } from './jobs.service.js';
-import { JobStatus } from './types/jobs.types.js';
 
 @Controller('jobs')
 export class JobsController {
   constructor(private readonly jobsSVC: JobsService) {}
   @Post()
-  create(@Body() body: CreateJobBodyDto) {
-    this.jobsSVC.create(body);
+  async create(@Body() body: CreateJobBodyDto) {
+    const job = await this.jobsSVC.create(body);
+
+    return job;
   }
 
   @Get()
@@ -40,8 +41,9 @@ export class JobsController {
     name: 'id',
     type: String,
   })
-  getJob(@Param('id', ParseUUIDPipe) id: string) {
-    return this.jobsSVC.getJob(id);
+  async getJob(@Param('id', ParseUUIDPipe) id: string) {
+    const { job } = await this.jobsSVC.getJob(id);
+    return job;
   }
 
   @Patch('/:id')
@@ -56,22 +58,23 @@ export class JobsController {
     return this.jobsSVC.editJobProperty(id, body);
   }
 
-  @Patch('/:id/:status')
+  @Patch('/:id/cancel')
   @ApiParam({
     name: 'id',
     type: String,
-    description: '대기,프로세싱(펜딩) => 취소 / 취소 => 대기 상태 변경',
+    description: '대기,프로세싱(펜딩) => 취소',
   })
+  changeStatusCancel(@Param('id', ParseUUIDPipe) id: string) {
+    return this.jobsSVC.changeStatusCancel(id);
+  }
+
+  @Patch('/:id/wait')
   @ApiParam({
-    name: 'status',
+    name: 'id',
     type: String,
-    description:
-      '대기,프로세싱(펜딩) => 취소 / 취소 => 대기 상태 변경 (상태 명시 필수)',
+    description: '취소 => 대기 상태 변경',
   })
-  editJobStatus(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Param('status') status: JobStatus,
-  ) {
-    return this.jobsSVC.editJobStatus(id, status);
+  changeStatusWait(@Param('id', ParseUUIDPipe) id: string) {
+    return this.jobsSVC.changeStatusWait(id);
   }
 }

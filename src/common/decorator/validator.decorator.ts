@@ -1,12 +1,12 @@
 import {
   registerDecorator,
   ValidationArguments,
-  ValidatorOptions,
+  ValidationOptions,
 } from 'class-validator';
 
 export function AtLeastOneField(
   fields: string[],
-  validationOptions?: ValidatorOptions,
+  validationOptions?: ValidationOptions,
 ) {
   return function (obj: object, propertyName: string) {
     registerDecorator({
@@ -19,7 +19,7 @@ export function AtLeastOneField(
         validate(_: unknown, args: ValidationArguments) {
           const [fields] = args.constraints;
           const obj = args.object as Record<string, unknown>;
-          return fields.som((f: string) => obj[f] !== undefined);
+          return fields.some((f: string) => obj[f] !== undefined);
         },
       },
     });

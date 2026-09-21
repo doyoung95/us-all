@@ -78,11 +78,16 @@ describe('JobsService', () => {
       async (status) => {
         await seed([job({ status, title: '기존 제목' })]);
 
-        await service.editJobProperty('a', {
+        const edited = await service.editJobProperty('a', {
           title: undefined,
           description: '새 설명',
         });
 
+        // 변경된 job 을 그대로 돌려준다 (컨트롤러 응답 바디가 된다)
+        expect(edited).toMatchObject({
+          title: '기존 제목',
+          description: '새 설명',
+        });
         expect(await find()).toMatchObject({
           title: '기존 제목',
           description: '새 설명',
@@ -103,24 +108,49 @@ describe('JobsService', () => {
     );
   });
 
-  describe('editJobStatus', () => {
+  describe('changeStatusCancel', () => {
     it.each([
-      [JobStatus.waiting, JobStatus.canceled, true],
-      [JobStatus.pending, JobStatus.canceled, true],
-      [JobStatus.canceled, JobStatus.waiting, true],
-      [JobStatus.waiting, JobStatus.pending, false],
-      [JobStatus.waiting, JobStatus.completed, false],
-      [JobStatus.completed, JobStatus.waiting, false],
-    ])('%s -> %s 전이 허용: %s', async (from, to, allowed) => {
+      [JobStatus.waiting, true],
+      [JobStatus.pending, true],
+      [JobStatus.canceled, false],
+      [JobStatus.completed, false],
+    ])('%s 상태에서 취소 가능: %s', async (from, allowed) => {
       await seed([job({ status: from })]);
 
       if (allowed) {
-        await service.editJobStatus('a', to);
-        expect((await find()).status).toBe(to);
+        const changed = await service.changeStatusCancel('a');
+
+        // 변경된 job 을 그대로 돌려준다 (컨트롤러 응답 바디가 된다)
+        expect(changed.status).toBe(JobStatus.canceled);
+        expect((await find()).status).toBe(JobStatus.canceled);
         return;
       }
 
-      await expect(service.editJobStatus('a', to)).rejects.toBeInstanceOf(
+      await expect(service.changeStatusCancel('a')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect((await find()).status).toBe(from);
+    });
+  });
+
+  describe('changeStatusWait', () => {
+    it.each([
+      [JobStatus.canceled, true],
+      [JobStatus.waiting, false],
+      [JobStatus.pending, false],
+      [JobStatus.completed, false],
+    ])('%s 상태에서 대기 복구 가능: %s', async (from, allowed) => {
+      await seed([job({ status: from })]);
+
+      if (allowed) {
+        const changed = await service.changeStatusWait('a');
+
+        expect(changed.status).toBe(JobStatus.waiting);
+        expect((await find()).status).toBe(JobStatus.waiting);
+        return;
+      }
+
+      await expect(service.changeStatusWait('a')).rejects.toBeInstanceOf(
         ConflictException,
       );
       expect((await find()).status).toBe(from);

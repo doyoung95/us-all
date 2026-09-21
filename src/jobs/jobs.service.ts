@@ -2,6 +2,7 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
@@ -9,7 +10,6 @@ import { Config, JsonDB } from 'node-json-db';
 import { RuntimeService } from '../common/runtime/runtime.service.js';
 import { MutexManager } from '../util/mutex-manager.js';
 import { random } from '../util/random.js';
-import { JOB_STATUS_TRANSITIONS } from './jobs.constants.js';
 import { JOB_MUTEX_MANAGER } from './jobs.token.js';
 import {
   CreateJob,
@@ -47,16 +47,20 @@ export class JobsService {
 
   async create(data: CreateJob) {
     try {
-      await this.db.push('/list[]', {
-        id: randomUUID(),
+      const id = randomUUID();
+      const job = {
+        id,
         title: data.title,
         description: data.description,
         status: JobStatus.waiting,
         processingTime: random(1, 20),
         reservationTime: random(1, 20) + this.runtimeSVC.getRunningSec(),
-      });
+      };
+      await this.db.push('/list[]', job);
+      return job;
     } catch (error) {
       console.error(error);
+      throw new InternalServerErrorException();
     }
   }
 
@@ -94,7 +98,7 @@ export class JobsService {
   }
 
   async editJobProperty(id: string, data: EditJobProperty) {
-    await this.mutexManager.run(id, async () => {
+    return this.mutexManager.run<Job>(id, async () => {
       const { idx, job } = await this.getJob(id);
 
       switch (job.status) {
@@ -110,20 +114,37 @@ export class JobsService {
       );
 
       await this.db.push(`/list[${idx}]`, patchData, false);
+
+      return { ...job, ...patchData };
     });
   }
 
   // TODO job 버전 관리 필요
-  async editJobStatus(id: string, status: JobStatus) {
-    await this.mutexManager.run(id, async () => {
+  async changeStatusCancel(id: string) {
+    return this.mutexManager.run<Job>(id, async () => {
       const { idx, job } = await this.getJob(id);
-      if (!JOB_STATUS_TRANSITIONS[job.status].includes(status)) {
-        throw new ConflictException(
-          ` 올바르지 않은 요청입니다 : can't edit from ${job.status} to ${status}`,
-        );
+      if (
+        job.status !== JobStatus.waiting &&
+        job.status !== JobStatus.pending
+      ) {
+        throw new ConflictException('대기/처리중인 작업만 취소 가능합니다');
       }
 
-      await this.editStatusByIdx(idx, status);
+      await this.editStatusByIdx(idx, JobStatus.canceled);
+
+      return { ...job, status: JobStatus.canceled };
+    });
+  }
+
+  async changeStatusWait(id: string) {
+    return this.mutexManager.run<Job>(id, async () => {
+      const { idx, job } = await this.getJob(id);
+      if (job.status !== JobStatus.canceled) {
+        throw new ConflictException('취소된 작업만 복구 가능합니다.');
+      }
+
+      await this.editStatusByIdx(idx, JobStatus.waiting);
+      return { ...job, status: JobStatus.waiting };
     });
   }
 }

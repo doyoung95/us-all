@@ -6,7 +6,7 @@ import { JobStatus } from '../types/jobs.types.js';
 export class CreateJobBodyDto {
   @ApiProperty({ example: '테스트 제목' })
   @IsString()
-  @IsNotEmpty()
+  @IsNotEmpty({ message: '작업 타이틀을 입력해주세요.' })
   title: string;
 
   @ApiPropertyOptional({ example: '테스트 내용' })
@@ -38,6 +38,8 @@ export class EditJobPropertyBodyDto {
   @IsString()
   description?: string;
 
-  @AtLeastOneField(['title', 'description'])
+  @AtLeastOneField(['title', 'description'], {
+    message: '변경할 데이터를 입력해주세요.',
+  })
   private readonly _atLeastOneField?: never;
 }

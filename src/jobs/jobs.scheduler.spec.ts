@@ -191,7 +191,7 @@ describe('JobsScheduler', () => {
       await seed([job()]);
 
       await scheduler.consume();
-      await jobsSVC.editJobStatus('a', JobStatus.canceled);
+      await jobsSVC.changeStatusCancel('a');
 
       await new Promise((resolve) =>
         setTimeout(resolve, PROCESSING_SEC * 1000 + 100),
