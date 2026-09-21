@@ -145,7 +145,6 @@ export class JobsScheduler {
 
     const claimJob = await this.claimJob();
 
-    // TODO 다른 job 찾는 작업 필요
     if (!claimJob) {
       return;
     }

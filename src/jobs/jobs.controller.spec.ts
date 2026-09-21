@@ -5,6 +5,7 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { AllExceptionsFilter } from '../common/http-exception.filter.js';
 import request from 'supertest';
 import { vi } from 'vitest';
 import { JobsController } from './jobs.controller.js';
@@ -45,8 +46,11 @@ describe('JobsController', () => {
     }).compile();
 
     app = moduleRef.createNestApplication();
-    // DTO/파이프까지 함께 검증하려면 main.ts 와 같은 설정이어야 한다
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+    // DTO/파이프/에러 포맷까지 함께 검증하려면 main.ts 와 같은 설정이어야 한다
+    app.useGlobalPipes(
+      new ValidationPipe({ whitelist: true, transform: true }),
+    );
+    app.useGlobalFilters(new AllExceptionsFilter());
     await app.init();
   });
 
@@ -190,7 +194,7 @@ describe('JobsController', () => {
         .send({ title: '새 제목' })
         .expect(409);
 
-      expect(res.body.message).toBe('처리중인 작업은 수정할 수 없습니다.');
+      expect(res.body.message).toContain('처리중인 작업은 수정할 수 없습니다.');
     });
   });
 
@@ -233,6 +237,63 @@ describe('JobsController', () => {
       );
 
       await http().patch(`/jobs/${ID}/wait`).expect(409);
+    });
+  });
+
+  describe('에러 응답 형식', () => {
+    // 발생 지점(파이프 / DTO / 서비스)이 달라도 한 가지 모양이어야 한다
+    const cases = [
+      {
+        name: '400 (DTO 검증)',
+        status: 400,
+        call: () => http().patch(`/jobs/${ID}`).send({}),
+      },
+      {
+        name: '400 (uuid 형식)',
+        status: 400,
+        call: () => http().get('/jobs/not-a-uuid'),
+      },
+      {
+        name: '404 (없는 job)',
+        status: 404,
+        call: () => {
+          jobsSVC.getJob.mockRejectedValue(new NotFoundException());
+          return http().get(`/jobs/${ID}`);
+        },
+      },
+      {
+        name: '409 (전이 불가)',
+        status: 409,
+        call: () => {
+          jobsSVC.changeStatusCancel.mockRejectedValue(
+            new ConflictException('대기/처리중인 작업만 취소 가능합니다'),
+          );
+          return http().patch(`/jobs/${ID}/cancel`);
+        },
+      },
+    ];
+
+    it.each(cases)(
+      '$name 도 { statusCode, message[] } 다',
+      async ({ status, call }) => {
+        const res = await call().expect(status);
+
+        expect(Object.keys(res.body).sort()).toEqual(['message', 'statusCode']);
+        expect(res.body.statusCode).toBe(status);
+        expect(Array.isArray(res.body.message)).toBe(true);
+        expect(
+          res.body.message.every((m: unknown) => typeof m === 'string'),
+        ).toBe(true);
+      },
+    );
+
+    it('예상치 못한 에러는 500 이고 내부 정보를 노출하지 않는다', async () => {
+      jobsSVC.getJobs.mockRejectedValue(new Error('jobs.json 을 읽을 수 없음'));
+
+      const res = await http().get('/jobs').expect(500);
+
+      expect(res.body.message).toEqual(['서버 오류가 발생했습니다.']);
+      expect(JSON.stringify(res.body)).not.toContain('jobs.json');
     });
   });
 });
