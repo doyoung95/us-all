@@ -1,8 +1,4 @@
-import {
-  BadRequestException,
-  ConflictException,
-  NotFoundException,
-} from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import { mkdtempSync, rmSync } from 'fs';
 import { Config, JsonDB } from 'node-json-db';
 import { tmpdir } from 'os';
@@ -246,12 +242,12 @@ describe('JobsService', () => {
       expect((await list())[0].status).toBe(JobStatus.canceled);
     });
 
-    it('허용되지 않은 전이는 BadRequestException 을 던지고 상태를 바꾸지 않는다', async () => {
+    it('허용되지 않은 전이는 ConflictException 을 던지고 상태를 바꾸지 않는다', async () => {
       await seed([job({ id: 'a', status: JobStatus.waiting })]);
 
       await expect(
         service.editJobStatus('a', JobStatus.completed),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(ConflictException);
       expect((await list())[0].status).toBe(JobStatus.waiting);
     });
 
@@ -260,7 +256,7 @@ describe('JobsService', () => {
 
       await expect(
         service.editJobStatus('a', JobStatus.waiting),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(ConflictException);
     });
 
     it('job id 를 키로 mutex 를 잡는다', async () => {
@@ -289,7 +285,7 @@ describe('JobsService', () => {
       // 이미 canceled 이므로 canceled -> canceled 전이는 거부된다
       expect(results[1].status).toBe('rejected');
       expect((results[1] as PromiseRejectedResult).reason).toBeInstanceOf(
-        BadRequestException,
+        ConflictException,
       );
       expect((await list())[0].status).toBe(JobStatus.canceled);
     });
@@ -299,7 +295,7 @@ describe('JobsService', () => {
 
       await expect(
         service.editJobStatus('a', JobStatus.completed),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(ConflictException);
       await service.editJobStatus('a', JobStatus.canceled);
 
       expect((await list())[0].status).toBe(JobStatus.canceled);
