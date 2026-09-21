@@ -141,23 +141,9 @@ describe('JobsService', () => {
     });
   });
 
-  describe('editStatusById / editStatusByIdx', () => {
+  describe('editStatusByIdx', () => {
     beforeEach(async () => {
       await seed([job({ id: 'a' }), job({ id: 'b' })]);
-    });
-
-    it('id 로 상태만 변경한다', async () => {
-      await service.editStatusById('b', JobStatus.completed);
-
-      const jobs = await list();
-      expect(jobs[1]).toEqual(job({ id: 'b', status: JobStatus.completed }));
-      expect(jobs[0].status).toBe(JobStatus.waiting);
-    });
-
-    it('id 가 없으면 NotFoundException 을 던진다', async () => {
-      await expect(
-        service.editStatusById('none', JobStatus.completed),
-      ).rejects.toBeInstanceOf(NotFoundException);
     });
 
     it('idx 로 상태만 변경한다', async () => {

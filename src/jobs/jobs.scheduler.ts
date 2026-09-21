@@ -18,17 +18,55 @@ export class JobsScheduler {
 
   // TODO 리커버리 코드 필요
 
-  private async process(job: Job) {
+  private async processJob(job: Job) {
     await process(job.processingTime);
 
+    await this.completeJob(job);
+  }
+
+  private async completeJob(job: Job) {
     await this.mutexManager.run(job.id, async () => {
-      const { job: lockedJob } = await this.jobsSVC.getJob(job.id);
+      const { idx, job: lockedJob } = await this.jobsSVC.getJob(job.id);
       // TODO 취소된 케이스 원복 필요
       if (lockedJob.status !== JobStatus.pending) {
         return;
       }
-      await this.jobsSVC.editStatusById(job.id, JobStatus.completed);
+      await this.jobsSVC.editStatusByIdx(idx, JobStatus.completed);
     });
+  }
+
+  private async getClaimJob(id: string) {
+    return this.mutexManager.run<Job | null>(id, async () => {
+      // TODO reservation 처리 위해서 조회 query 추가
+      const { idx, job: lockedJob } = await this.jobsSVC.getJob(id);
+
+      if (lockedJob.status !== JobStatus.waiting) return null;
+
+      await this.jobsSVC.editStatusByIdx(idx, JobStatus.pending);
+
+      return {
+        ...lockedJob,
+        status: JobStatus.pending,
+      };
+    });
+  }
+
+  private async claimJob() {
+    const jobs = await this.jobsSVC.searchJobs({
+      status: JobStatus.waiting,
+    });
+
+    if (jobs.length === 0) {
+      return null;
+    }
+
+    for (const job of jobs) {
+      const claimJob = await this.getClaimJob(job.id);
+
+      if (claimJob) return claimJob;
+    }
+
+    return null;
   }
 
   @Cron('*/5 * * * * *')
@@ -37,30 +75,14 @@ export class JobsScheduler {
     const isPrimary = true;
     if (!isPrimary) return;
 
-    // TODO reservation 처리 위해서 조회 query 추가
-    const jobs = await this.jobsSVC.searchJobs({
-      status: JobStatus.waiting,
-    });
-
-    if (jobs.length === 0) {
-      return;
-    }
-
-    const job = jobs[0];
-
-    const claimed = await this.mutexManager.run<Boolean>(job.id, async () => {
-      const { job: lockedJob } = await this.jobsSVC.getJob(job.id);
-      if (lockedJob.status !== JobStatus.waiting) return false;
-      await this.jobsSVC.editStatusById(job.id, JobStatus.pending);
-      return true;
-    });
+    const claimJob = await this.claimJob();
 
     // TODO 다른 job 찾는 작업 필요
-    if (!claimed) {
+    if (!claimJob) {
       return;
     }
 
     // fire-and-forget
-    this.process(job);
+    this.processJob(claimJob);
   }
 }

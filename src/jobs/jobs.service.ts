@@ -36,10 +36,6 @@ export class JobsService {
     }
   }
 
-  async editStatusById(id: string, status: JobStatus) {
-    const { idx } = await this.getJob(id);
-    await this.db.push(`/list[${idx}]`, { status }, false);
-  }
   async editStatusByIdx(idx: number, status: JobStatus) {
     await this.db.push(`/list[${idx}]`, { status }, false);
   }
