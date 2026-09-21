@@ -27,7 +27,7 @@ export class SearchJobQueryDto {
   status?: JobStatus;
 }
 
-export class EditJobBodyDto {
+export class EditJobPropertyBodyDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
@@ -38,11 +38,6 @@ export class EditJobBodyDto {
   @IsString()
   description?: string;
 
-  @ApiPropertyOptional({ enum: JobStatus })
-  @IsOptional()
-  @IsEnum(JobStatus)
-  status?: JobStatus;
-
-  @AtLeastOneField(['title', 'description', 'status'])
+  @AtLeastOneField(['title', 'description'])
   private readonly _atLeastOneField?: never;
 }

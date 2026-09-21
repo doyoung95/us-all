@@ -1,15 +1,19 @@
 import {
+  BadRequestException,
   ConflictException,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { Config, JsonDB } from 'node-json-db';
 import { RuntimeService } from '../common/runtime/runtime.service.js';
+import { MutexManager } from '../util/mutex-manager.js';
 import { random } from '../util/random.js';
+import { JOB_STATUS_TRANSITIONS } from './jobs.constants.js';
+import { JOB_MUTEX_MANAGER } from './jobs.token.js';
 import {
   CreateJob,
-  EditJob,
   EditJobProperty,
   Job,
   JobStatus,
@@ -19,7 +23,11 @@ import {
 @Injectable()
 export class JobsService {
   private readonly db = new JsonDB(new Config('data/jobs', true, false, '/'));
-  constructor(private runtimeSVC: RuntimeService) {}
+  constructor(
+    private runtimeSVC: RuntimeService,
+    @Inject(JOB_MUTEX_MANAGER)
+    private mutexManager: MutexManager,
+  ) {}
 
   async onModuleInit() {
     try {
@@ -27,6 +35,14 @@ export class JobsService {
     } catch {
       await this.db.push('/list', []);
     }
+  }
+
+  async editStatusById(id: string, status: JobStatus) {
+    const { idx } = await this.getJob(id);
+    await this.db.push(`/list[${idx}]`, { status }, false);
+  }
+  async editStatusByIdx(idx: number, status: JobStatus) {
+    await this.db.push(`/list[${idx}]`, { status }, false);
   }
 
   async create(data: CreateJob) {
@@ -77,7 +93,18 @@ export class JobsService {
     };
   }
 
-  private async editProperty(idx: number, data: EditJobProperty) {
+  // TODO 여기도 락 상태 문제 발생
+  async editJobProperty(id: string, data: EditJobProperty) {
+    const { idx, job } = await this.getJob(id);
+
+    switch (job.status) {
+      case JobStatus.completed:
+        throw new ConflictException('완료된 작업은 수정할 수 없습니다.');
+      case JobStatus.pending:
+        throw new ConflictException('처리중인 작업은 수정할 수 없습니다.');
+      default:
+    }
+
     const patchData = Object.fromEntries(
       Object.entries(data).filter(([_, value]) => value !== undefined),
     );
@@ -85,31 +112,17 @@ export class JobsService {
     await this.db.push(`/list[${idx}]`, patchData, false);
   }
 
-  private async editStatus(idx: number, status: JobStatus) {
-    await this.db.push(`/list[${idx}]`, { status }, false);
-  }
-
-  // TODO lock 필요
-  // TODO 상태 변경 로직 분리 필요
-  async editJob(id: string, data: EditJob) {
-    const { title, description, status } = data;
-    const { idx, job } = await this.getJob(id);
-
-    // 작업중인 job은 수정 불가
-    if (job.status === JobStatus.pending) {
-      throw new ConflictException('작업중인 job은 수정할 수 없습니다.');
-    }
-
-    if (title !== undefined || description !== undefined) {
-      await this.editProperty(idx, { title, description });
-    }
-
-    if (status !== undefined && Object.values(JobStatus).includes(status)) {
-      // 완료된 작업은 상태 수정 불가
-      if (status === JobStatus.completed) {
-        throw new ConflictException('완료된 작업입니다.');
+  // TODO job 버전 관리 필요
+  async editJobStatus(id: string, status: JobStatus) {
+    await this.mutexManager.run(id, async () => {
+      const { idx, job } = await this.getJob(id);
+      if (!JOB_STATUS_TRANSITIONS[job.status].includes(status)) {
+        throw new BadRequestException(
+          ` 올바르지 않은 요청입니다 : can't edit from ${job.status} to ${status}`,
+        );
       }
-      await this.editStatus(idx, status);
-    }
+
+      await this.editStatusByIdx(idx, status);
+    });
   }
 }

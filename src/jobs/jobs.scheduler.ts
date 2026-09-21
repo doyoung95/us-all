@@ -31,13 +31,15 @@ export class JobsScheduler {
       console.log('empty');
       return;
     }
-    const job = jobs[0];
-    await this.jobsSVC.editJob(job.id, { status: JobStatus.pending });
 
+    // TODO 락 획득 전 작업 위험 수정 필요
+    // 락과 상태값으로 처리 필요
+    const job = jobs[0];
+    await this.jobsSVC.editStatusById(job.id, JobStatus.pending);
     // fire-and-forget
     this.mutexManager.run(job.id, async () => {
       await process(job.processingTime);
-      await this.jobsSVC.editJob(job.id, { status: JobStatus.completed });
+      await this.jobsSVC.editStatusById(job.id, JobStatus.completed);
     });
   }
 }

@@ -4,6 +4,7 @@ export enum JobStatus {
   completed = 'completed',
   canceled = 'canceled',
 }
+
 export type Job = {
   id: string;
   title: string;
@@ -23,12 +24,6 @@ export type CreateJob = {
 
 export type SearchJobQuery = {
   title?: string;
-  status?: JobStatus;
-};
-
-export type EditJob = {
-  title?: string;
-  description?: string;
   status?: JobStatus;
 };
 
