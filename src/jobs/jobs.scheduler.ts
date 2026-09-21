@@ -9,6 +9,7 @@ import { process } from './util/process.js';
 
 @Injectable()
 export class JobsScheduler {
+  private recovered = false;
   constructor(
     private readonly runtimeSVC: RuntimeService,
     private readonly jobsSVC: JobsService,
@@ -16,7 +17,23 @@ export class JobsScheduler {
     private readonly mutexManager: MutexManager,
   ) {}
 
-  // TODO 리커버리 코드 필요
+  get isRecovered() {
+    return this.recovered;
+  }
+
+  async onApplicationBootstrap() {
+    const pendingJobs = await this.jobsSVC.searchJobs({
+      status: JobStatus.pending,
+    });
+
+    // TODO 변경 사항 원복 작업 필요
+    for (const job of pendingJobs) {
+      const { idx } = await this.jobsSVC.getJob(job.id);
+      await this.jobsSVC.editStatusByIdx(idx, JobStatus.waiting);
+    }
+
+    this.recovered = true;
+  }
 
   private async processJob(job: Job) {
     await process(job.processingTime);
@@ -77,6 +94,8 @@ export class JobsScheduler {
     // 멀티 인스턴스일 때 메인 인스턴스만 스케쥴러 돌도록
     const isPrimary = true;
     if (!isPrimary) return;
+    // 리커버 완료시 틱 돌도록
+    if (!this.isRecovered) return;
 
     const claimJob = await this.claimJob();
 
