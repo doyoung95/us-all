@@ -69,7 +69,10 @@ export class JobsScheduler {
     return null;
   }
 
-  @Cron('*/5 * * * * *')
+  @Cron('*/5 * * * * *', {
+    // getClaimJob 순회 완료되지 않은 경우 틱 중지
+    waitForCompletion: true,
+  })
   async consume() {
     // 멀티 인스턴스일 때 메인 인스턴스만 스케쥴러 돌도록
     const isPrimary = true;
