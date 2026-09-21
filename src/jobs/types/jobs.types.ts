@@ -2,6 +2,7 @@ export enum JobStatus {
   waiting = 'waiting',
   pending = 'pending',
   completed = 'completed',
+  canceled = 'canceled',
 }
 export type Job = {
   id: string;
