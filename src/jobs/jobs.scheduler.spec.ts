@@ -426,10 +426,14 @@ describe('JobsScheduler', () => {
       await scheduler.consume();
       expect(await statusOf('b')).toBe(JobStatus.waiting);
 
+      // done 은 DB 에 completed 가 보이면 반환하는데, 슬롯 해제(processingSet)는
+      // 그 직후 finally 에서 일어난다. 해제될 때까지 틱을 계속 돌린다
       await done('a');
+      await waitFor(async () => {
+        await scheduler.consume();
+        return (await statusOf('b')) === JobStatus.pending;
+      });
 
-      await scheduler.consume();
-      expect(await statusOf('b')).toBe(JobStatus.pending);
       await done('b');
     });
   });
