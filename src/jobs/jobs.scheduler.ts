@@ -91,6 +91,7 @@ export class JobsScheduler {
       await this.completeJob(job);
     } catch (error) {
       // TODO 실패한 job 상태 복구
+      // TODO 재시도 횟수 + 초과시 알림
       this.logger.error('job.process.failed', error, { jobId: job.id });
     } finally {
       // 처리 완료시 제거

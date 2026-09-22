@@ -317,6 +317,43 @@ describe('Jobs (e2e)', () => {
         version: 2,
       });
     });
+
+    it('처리 중 취소 후 재대기한 job 은 워커가 끝난 뒤에 한 번만 다시 처리된다', async () => {
+      const created = await createJob();
+      await ctx.setProcessingTime(created.id, 0.3);
+
+      await ctx.tick();
+      // 취소 후 마음을 바꿔 재대기로 돌리는 것은 허용된 흐름이다 (선점 2 → 취소 3 → 재대기 4)
+      await http()
+        .patch(`/jobs/${created.id}/cancel`)
+        .send({ version: 2 })
+        .expect(200);
+      await http()
+        .patch(`/jobs/${created.id}/wait`)
+        .send({ version: 3 })
+        .expect(200);
+
+      // waiting 이지만 워커가 아직 도는 중이라 틱이 집어가면 안 된다.
+      // 여기서 선점되면 같은 job 을 워커 둘이 동시에 처리한다
+      await ctx.tick();
+      expect(await getJob(created.id)).toMatchObject({
+        status: JobStatus.waiting,
+        version: 4,
+      });
+
+      // 워커가 끝나면 다시 선점된다 (끝나도 선점되지 않으면 job 이 영구히 멈춘다)
+      await waitFor(async () => {
+        await ctx.tick();
+        return (await getJob(created.id)).status === JobStatus.pending;
+      });
+      expect(await getJob(created.id)).toMatchObject({ version: 5 });
+
+      await waitFor(
+        async () => (await getJob(created.id)).status === JobStatus.completed,
+      );
+      expect(await getJob(created.id)).toMatchObject({ version: 6 });
+      expect(await ctx.recoverSVC.getRecover(created.id)).toBeNull();
+    });
   });
 
   describe('재기동 리커버리', () => {

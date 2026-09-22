@@ -262,4 +262,74 @@ describe('JobsScheduler', () => {
       expect(await recoverSVC.getRecover('a')).toBeNull();
     });
   });
+
+  describe('중복 선점 방지', () => {
+    // 취소 후 재대기는 허용된 전이라 status 만으로는 "워커가 도는 중" 을 알 수 없다.
+    // 그래서 선점한 id 를 인메모리로 들고 있다가 처리가 끝날 때 놓아준다
+    const cancelAndWait = async () => {
+      await jobsSVC.changeStatusCancel('a', 2);
+      await jobsSVC.changeStatusWait('a', 3);
+    };
+
+    it('워커가 도는 동안에는 같은 job 을 다시 선점하지 않는다', async () => {
+      // 취소/재대기 왕복이 끝날 때까지 워커가 살아 있어야 하는 테스트다
+      await seed([job({ processingTime: 1 })]);
+
+      await scheduler.consume();
+      await cancelAndWait();
+      expect(await statusOf()).toBe(JobStatus.waiting);
+
+      // waiting 이지만 아직 처리 중이므로 틱이 집어가면 안 된다
+      await scheduler.consume();
+
+      expect(await jobOf()).toEqual(
+        job({ version: 4, processingTime: 1, status: JobStatus.waiting }),
+      );
+      // 선점이 없었으니 recover 도 선점 이전(version 1) 원본 그대로다
+      expect(await recoverSVC.getRecover('a')).toEqual(
+        job({ processingTime: 1 }),
+      );
+    });
+
+    it('워커가 끝나면 다시 선점되어 완료까지 간다', async () => {
+      await seed([job()]);
+
+      await scheduler.consume();
+      await cancelAndWait();
+
+      // 처리가 끝나 id 가 풀릴 때까지 틱을 계속 돌린다.
+      // 여기서 풀어주지 않으면 job 은 waiting 그대로 영구히 멈춘다
+      await waitFor(async () => {
+        await scheduler.consume();
+        return (await statusOf()) === JobStatus.pending;
+      });
+
+      // 취소/재대기(3,4) 다음 재선점이라 version 은 5 부터 이어진다
+      expect(await jobOf()).toEqual(
+        job({ version: 5, status: JobStatus.pending }),
+      );
+
+      await done();
+      expect(await jobOf()).toEqual(
+        job({ version: 6, status: JobStatus.completed }),
+      );
+      expect(await recoverSVC.getRecover('a')).toBeNull();
+    });
+
+    it('낡은 워커는 완료를 커밋하지 않는다', async () => {
+      await seed([job()]);
+
+      await scheduler.consume();
+      await cancelAndWait();
+
+      // 1차 워커가 끝나는 시점을 지나도 completed 로 넘어가지 않는다
+      await new Promise((resolve) =>
+        setTimeout(resolve, PROCESSING_SEC * 1000 + 100),
+      );
+
+      expect(await jobOf()).toEqual(
+        job({ version: 4, status: JobStatus.waiting }),
+      );
+    });
+  });
 });
