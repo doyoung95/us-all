@@ -14,6 +14,7 @@ import { process } from './util/process.js';
 export class JobsScheduler {
   private recovered = false;
   private isPrimary: boolean;
+  private processingSet = new Set();
   constructor(
     private readonly runtimeSVC: RuntimeService,
     private readonly jobsSVC: JobsService,
@@ -87,10 +88,13 @@ export class JobsScheduler {
   private async processJob(job: Job) {
     try {
       await process(job.processingTime);
-
       await this.completeJob(job);
     } catch (error) {
+      // TODO 실패한 job 상태 복구
       this.logger.error('job.process.failed', error, { jobId: job.id });
+    } finally {
+      // 처리 완료시 제거
+      this.processingSet.delete(job.id);
     }
   }
 
@@ -138,6 +142,9 @@ export class JobsScheduler {
 
   private async getClaimJob(id: string) {
     return this.mutexManager.run<Job | null>(id, async () => {
+      // pending => canceled => waiting 케이스 중복 처리 방지
+      if (this.processingSet.has(id)) return null;
+
       // TODO reservation 처리 위해서 조회 query 추가
       const { idx, job } = await this.jobsSVC.getJob(id);
 
@@ -154,6 +161,7 @@ export class JobsScheduler {
         processingTime: job.processingTime,
       });
 
+      this.processingSet.add(id);
       return updatedJob;
     });
   }
