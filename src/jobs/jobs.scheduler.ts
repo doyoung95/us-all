@@ -14,6 +14,7 @@ export class JobsScheduler {
   private recovered = false;
   private isPrimary: boolean;
   private processingSet = new Set();
+  private concurrency: number = 10;
   constructor(
     private readonly runtimeSVC: RuntimeService,
     private readonly jobsSVC: JobsService,
@@ -21,7 +22,12 @@ export class JobsScheduler {
     @Inject(JOB_MUTEX_MANAGER)
     private readonly mutexManager: MutexManager,
     private readonly logger: AppLogger,
+    // @Inject(JOB_CONCURRENCY)
+    // concurrency: number,
   ) {
+    // 동시 처리 상한 제한
+    // this.concurrency = concurrency;
+
     // 멀티 인스턴스일 때 메인 인스턴스만 스케쥴러 돌도록
     this.isPrimary = true;
   }
@@ -174,6 +180,8 @@ export class JobsScheduler {
     if (!this.isPrimary) return;
     // 리커버 완료시 틱 돌도록
     if (!this.isRecovered) return;
+    // 동시 처리 개수 제한
+    if (this.concurrency <= this.processingSet.size) return;
 
     const claimJob = await this.claimJob();
 

@@ -383,4 +383,54 @@ describe('JobsScheduler', () => {
       );
     });
   });
+
+  describe('동시 실행 상한', () => {
+    // 처리는 fire-and-forget 이라 선점 속도(틱당 1건)만으로는 동시 실행 개수가
+    // 묶이지 않는다. 상한은 처리 중인 id 집합의 크기로 건다
+    const setConcurrency = (value: number) => {
+      (scheduler as unknown as { concurrency: number }).concurrency = value;
+    };
+
+    it('상한에 도달하면 틱이 돌아도 더 선점하지 않는다', async () => {
+      setConcurrency(2);
+      // 단정하는 동안 슬롯이 비지 않도록 처리 시간을 넉넉히 준다
+      const jobs = ['a', 'b', 'c'].map((id) =>
+        job({ id, processingTime: 0.5 }),
+      );
+      await seed(jobs);
+
+      // 상한보다 많이 돌려도 pending 은 상한만큼만 늘어난다
+      for (let i = 0; i < 4; i++) {
+        await scheduler.consume();
+      }
+
+      expect(await statusOf('a')).toBe(JobStatus.pending);
+      expect(await statusOf('b')).toBe(JobStatus.pending);
+      expect(await statusOf('c')).toBe(JobStatus.waiting);
+      // 선점되지 않았으니 recover 도 남지 않는다
+      expect(await recoverSVC.getRecover('c')).toBeNull();
+
+      // 남은 워커가 다음 테스트로 새어나가지 않게 비운다
+      await done('a');
+      await done('b');
+    });
+
+    it('처리가 끝나 슬롯이 비면 다시 선점한다', async () => {
+      setConcurrency(1);
+      await seed([job({ id: 'a' }), job({ id: 'b' })]);
+
+      await scheduler.consume();
+      expect(await statusOf('a')).toBe(JobStatus.pending);
+
+      // a 가 끝나기 전에는 상한에 걸려 b 를 잡지 않는다
+      await scheduler.consume();
+      expect(await statusOf('b')).toBe(JobStatus.waiting);
+
+      await done('a');
+
+      await scheduler.consume();
+      expect(await statusOf('b')).toBe(JobStatus.pending);
+      await done('b');
+    });
+  });
 });
