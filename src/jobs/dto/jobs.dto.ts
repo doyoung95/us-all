@@ -1,5 +1,11 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import {
+  IsEnum,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+} from 'class-validator';
 import { AtLeastOneField } from '../../common/decorator/validator.decorator.js';
 import { JobStatus } from '../types/jobs.types.js';
 
@@ -28,6 +34,13 @@ export class SearchJobQueryDto {
 }
 
 export class EditJobPropertyBodyDto {
+  @ApiProperty({
+    description:
+      '요청 시점의 버전 명시 (작업 시점의 버전이 다를 경우 에러 반환)',
+  })
+  @IsNumber()
+  version: number;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
@@ -42,4 +55,13 @@ export class EditJobPropertyBodyDto {
     message: '변경할 데이터를 입력해주세요.',
   })
   private readonly _atLeastOneField?: never;
+}
+
+export class EditJobStatusBodyDto {
+  @ApiProperty({
+    description:
+      '요청 시점의 버전 명시 (작업 시점의 버전이 다를 경우 에러 반환)',
+  })
+  @IsNumber()
+  version: number;
 }

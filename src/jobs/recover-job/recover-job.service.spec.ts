@@ -10,6 +10,7 @@ let seq = 0;
 
 const job = (override: Partial<Job> = {}): Job => ({
   id: 'a',
+  version: 1,
   title: '작업',
   status: JobStatus.waiting,
   reservationTime: 0,

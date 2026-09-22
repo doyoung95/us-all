@@ -40,19 +40,27 @@ export class JobsScheduler {
     for (const recoverJob of recoverJobs) {
       await this.mutexManager.run(recoverJob.id, async () => {
         try {
-          const { job } = await this.jobsSVC.getJob(recoverJob.id);
+          const { idx, job } = await this.jobsSVC.getJob(recoverJob.id);
 
           const toStatus = JOB_RECOVER_STATUS_TRANSITIONS[job.status];
           if (!toStatus) {
+            await this.recoverSVC.removeRecover(job.id);
+
+            this.logger.warn('job.recovered.cleanup', {
+              jobId: recoverJob.id,
+              from: job.status,
+            });
             return;
           }
 
           // pending 상태일 경우 waiting으로 원본 복구
           // cancel 상태일 경우 원본 복구 후 canceled 유지
-          await this.jobsSVC.putRecover({
-            ...recoverJob,
+          const recoverJobWithoutId = this.jobsSVC.omitMeta(recoverJob);
+          await this.jobsSVC.updateJob(idx, job, {
+            ...recoverJobWithoutId,
             status: toStatus,
           });
+
           await this.recoverSVC.removeRecover(job.id);
           this.logger.log('job.recovered', {
             jobId: recoverJob.id,
@@ -86,12 +94,14 @@ export class JobsScheduler {
     }
   }
 
-  private async completeJob(job: Job) {
-    await this.mutexManager.run(job.id, async () => {
-      const { idx, job: lockedJob } = await this.jobsSVC.getJob(job.id);
+  private async completeJob(completedJob: Job) {
+    await this.mutexManager.run(completedJob.id, async () => {
+      const { idx, job } = await this.jobsSVC.getJob(completedJob.id);
       // pending 작업의 경우 완료 처리
-      if (lockedJob.status === JobStatus.pending) {
-        await this.jobsSVC.editStatusByIdx(idx, JobStatus.completed);
+      if (job.status === JobStatus.pending) {
+        await this.jobsSVC.updateJob(idx, job, {
+          status: JobStatus.completed,
+        });
 
         await this.recoverSVC.removeRecover(job.id);
         this.logger.log('job.completed', { jobId: job.id });
@@ -99,19 +109,20 @@ export class JobsScheduler {
       }
 
       // canceled 작업의 경우 원본 복구 후 canceled 유지
-      if (lockedJob.status === JobStatus.canceled) {
-        const originJob = await this.recoverSVC.getRecover(lockedJob.id);
-        if (!originJob) {
+      if (job.status === JobStatus.canceled) {
+        const recoverJob = await this.recoverSVC.getRecover(job.id);
+        if (!recoverJob) {
           this.logger.error('job.recover.missing', undefined, {
-            jobId: lockedJob.id,
+            jobId: job.id,
           });
           return;
         }
-
-        await this.jobsSVC.putRecover({
-          ...originJob,
+        const recoverJobWithoutId = this.jobsSVC.omitMeta(recoverJob);
+        await this.jobsSVC.updateJob(idx, job, {
+          ...recoverJobWithoutId,
           status: JobStatus.canceled,
         });
+
         await this.recoverSVC.removeRecover(job.id);
         this.logger.log('job.canceled.restored', { jobId: job.id });
         return;
@@ -120,7 +131,7 @@ export class JobsScheduler {
       // 처리 중에 상태가 또 바뀐 경우 (예: 취소 후 재대기) 아무것도 커밋하지 않는다
       this.logger.warn('job.complete.skipped', {
         jobId: job.id,
-        status: lockedJob.status,
+        status: job.status,
       });
     });
   }
@@ -134,17 +145,16 @@ export class JobsScheduler {
 
       await this.recoverSVC.genRecover(job);
 
-      await this.jobsSVC.editStatusByIdx(idx, JobStatus.pending);
+      const updatedJob = await this.jobsSVC.updateJob(idx, job, {
+        status: JobStatus.pending,
+      });
 
       this.logger.log('job.claimed', {
         jobId: job.id,
         processingTime: job.processingTime,
       });
 
-      return {
-        ...job,
-        status: JobStatus.pending,
-      };
+      return updatedJob;
     });
   }
 

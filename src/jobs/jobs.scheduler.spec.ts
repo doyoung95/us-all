@@ -1,3 +1,4 @@
+import { ConflictException } from '@nestjs/common';
 import { mkdtempSync, rmSync } from 'fs';
 import { Config, JsonDB } from 'node-json-db';
 import { tmpdir } from 'os';
@@ -22,6 +23,7 @@ const PROCESSING_SEC = 0.15;
 
 const job = (override: Partial<Job> = {}): Job => ({
   id: 'a',
+  version: 1,
   title: '작업',
   status: JobStatus.waiting,
   reservationTime: 0,
@@ -99,24 +101,45 @@ describe('JobsScheduler', () => {
       [JobStatus.waiting, null],
       [JobStatus.completed, null],
     ])('%s 상태의 job 은 %s 로 복구된다', async (from, to) => {
-      await seed([job({ title: '변경된 제목', status: from })]);
+      await seed([job({ version: 2, title: '변경된 제목', status: from })]);
       await recoverSVC.genRecover(job({ title: '원본 제목' }));
 
       await newScheduler().onApplicationBootstrap();
 
       if (!to) {
-        // 복구 대상이 아니면 job 도 recover 도 건드리지 않는다
+        // 복구 대상이 아니면 job 은 그대로 두고 찌꺼기 recover 만 정리한다
         expect(await jobOf()).toEqual(
-          job({ title: '변경된 제목', status: from }),
+          job({ version: 2, title: '변경된 제목', status: from }),
         );
-        expect(await recoverSVC.getRecover('a')).toEqual(
-          job({ title: '원본 제목' }),
-        );
+        expect(await recoverSVC.getRecover('a')).toBeNull();
         return;
       }
 
-      expect(await jobOf()).toEqual(job({ title: '원본 제목', status: to }));
+      // 원본 값으로 되돌리되 version 은 되돌리지 않고 1 올린다
+      expect(await jobOf()).toEqual(
+        job({ version: 3, title: '원본 제목', status: to }),
+      );
       expect(await recoverSVC.getRecover('a')).toBeNull();
+    });
+
+    it('복구된 job 은 이전 version 으로 수정할 수 없다', async () => {
+      await seed([
+        job({ version: 2, title: '변경된 제목', status: JobStatus.pending }),
+      ]);
+      await recoverSVC.genRecover(job({ title: '원본 제목' }));
+
+      await newScheduler().onApplicationBootstrap();
+
+      // 복구 전 version(2) 을 들고 있던 요청은 거절된다
+      await expect(
+        jobsSVC.editJobProperty('a', { version: 2, title: '새 제목' }),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      const edited = await jobsSVC.editJobProperty('a', {
+        version: 3,
+        title: '새 제목',
+      });
+      expect(edited.version).toBe(4);
     });
 
     it('리커버리가 끝나기 전에는 tick 이 돌지 않는다', async () => {
@@ -141,7 +164,12 @@ describe('JobsScheduler', () => {
       await booting.onApplicationBootstrap();
 
       expect(await jobOf('b')).toEqual(
-        job({ id: 'b', title: '원본 제목', status: JobStatus.waiting }),
+        job({
+          id: 'b',
+          version: 2,
+          title: '원본 제목',
+          status: JobStatus.waiting,
+        }),
       );
       expect(await recoverSVC.getRecover('b')).toBeNull();
       expect(booting.isRecovered).toBe(true);
@@ -155,10 +183,37 @@ describe('JobsScheduler', () => {
       // consume 은 처리 완료를 기다리지 않는다 (fire-and-forget)
       await scheduler.consume();
       expect(await statusOf()).toBe(JobStatus.pending);
+      // recover 에는 선점 이전(version 1) 원본이 그대로 들어간다
       expect(await recoverSVC.getRecover('a')).toEqual(job());
 
       await done();
       expect(await recoverSVC.getRecover('a')).toBeNull();
+    });
+
+    it('선점과 완료가 각각 version 을 1 씩 올린다', async () => {
+      await seed([job()]);
+
+      await scheduler.consume();
+      expect(await jobOf()).toEqual(
+        job({ version: 2, status: JobStatus.pending }),
+      );
+
+      await done();
+      expect(await jobOf()).toEqual(
+        job({ version: 3, status: JobStatus.completed }),
+      );
+    });
+
+    it('선점되면 선점 이전 version 으로는 취소할 수 없다', async () => {
+      await seed([job()]);
+
+      await scheduler.consume();
+
+      await expect(jobsSVC.changeStatusCancel('a', 1)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+
+      await done();
     });
 
     it('한 번에 하나만 선점한다', async () => {
@@ -169,6 +224,8 @@ describe('JobsScheduler', () => {
       expect(await statusOf('a')).toBe(JobStatus.pending);
       expect(await statusOf('b')).toBe(JobStatus.waiting);
       expect(await recoverSVC.getRecover('b')).toBeNull();
+      // 선점되지 않은 job 의 version 은 그대로다
+      expect(await jobOf('b')).toEqual(job({ id: 'b' }));
 
       await done('a');
     });
@@ -190,14 +247,18 @@ describe('JobsScheduler', () => {
       await seed([job()]);
 
       await scheduler.consume();
-      await jobsSVC.changeStatusCancel('a');
+      // 선점으로 version 이 2 가 되었으므로 취소도 2 로 요청한다
+      await jobsSVC.changeStatusCancel('a', 2);
 
       await new Promise((resolve) =>
         setTimeout(resolve, PROCESSING_SEC * 1000 + 100),
       );
 
       // completed 로 덮어쓰지 않고, 원본 값으로 되돌린 뒤 canceled 유지
-      expect(await jobOf()).toEqual(job({ status: JobStatus.canceled }));
+      // version 은 선점(2) / 취소(3) / 원본 복구(4) 로 계속 올라간다
+      expect(await jobOf()).toEqual(
+        job({ version: 4, status: JobStatus.canceled }),
+      );
       expect(await recoverSVC.getRecover('a')).toBeNull();
     });
   });

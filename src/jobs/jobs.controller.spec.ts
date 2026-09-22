@@ -26,6 +26,7 @@ const ID = '11111111-1111-4111-8111-111111111111';
 
 const job = (override: Partial<Job> = {}): Job => ({
   id: ID,
+  version: 1,
   title: '작업',
   description: '설명',
   status: JobStatus.waiting,
@@ -88,6 +89,17 @@ describe('JobsController', () => {
       });
     });
 
+    it('응답에 version 이 포함된다', async () => {
+      jobsSVC.create.mockResolvedValue(job());
+
+      const res = await http()
+        .post('/jobs')
+        .send({ title: '작업' })
+        .expect(201);
+
+      expect(res.body.version).toBe(1);
+    });
+
     it.each([
       ['title 이 없으면', {}],
       ['title 이 빈 문자열이면', { title: '' }],
@@ -98,12 +110,12 @@ describe('JobsController', () => {
       expect(jobsSVC.create).not.toHaveBeenCalled();
     });
 
-    it('status 같은 서버 결정 필드는 whitelist 로 걸러진다', async () => {
+    it('status/version 같은 서버 결정 필드는 whitelist 로 걸러진다', async () => {
       jobsSVC.create.mockResolvedValue(job());
 
       await http()
         .post('/jobs')
-        .send({ title: '작업', status: JobStatus.completed })
+        .send({ title: '작업', status: JobStatus.completed, version: 99 })
         .expect(201);
 
       expect(jobsSVC.create).toHaveBeenCalledWith({ title: '작업' });
@@ -151,6 +163,8 @@ describe('JobsController', () => {
 
       expect(res.body).toEqual(job());
       expect(res.body).not.toHaveProperty('idx');
+      // 다음 수정 요청에 넣을 version 은 조회 응답으로 알 수 있어야 한다
+      expect(res.body.version).toBe(1);
     });
 
     it('uuid 형식이 아니면 400 이다', async () => {
@@ -167,17 +181,18 @@ describe('JobsController', () => {
   });
 
   describe('PATCH /jobs/:id', () => {
-    it('수정된 job 전체를 반환한다', async () => {
-      const edited = job({ title: '새 제목' });
+    it('version 과 수정 필드를 함께 넘기고 수정된 job 전체를 반환한다', async () => {
+      const edited = job({ title: '새 제목', version: 2 });
       jobsSVC.editJobProperty.mockResolvedValue(edited);
 
       const res = await http()
         .patch(`/jobs/${ID}`)
-        .send({ title: '새 제목' })
+        .send({ version: 1, title: '새 제목' })
         .expect(200);
 
       expect(res.body).toEqual(edited);
       expect(jobsSVC.editJobProperty).toHaveBeenCalledWith(ID, {
+        version: 1,
         title: '새 제목',
       });
     });
@@ -189,10 +204,30 @@ describe('JobsController', () => {
       expect(jobsSVC.editJobProperty).not.toHaveBeenCalled();
     });
 
+    it('version 만 있고 수정할 필드가 없으면 400 이다', async () => {
+      const res = await http()
+        .patch(`/jobs/${ID}`)
+        .send({ version: 1 })
+        .expect(400);
+
+      expect(res.body.message).toContain('변경할 데이터를 입력해주세요.');
+      expect(jobsSVC.editJobProperty).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['version 이 없으면', { title: '새 제목' }],
+      ['version 이 숫자가 아니면', { version: '1', title: '새 제목' }],
+      ['version 이 null 이면', { version: null, title: '새 제목' }],
+    ])('%s 400 이고 서비스를 호출하지 않는다', async (_, body) => {
+      await http().patch(`/jobs/${ID}`).send(body).expect(400);
+
+      expect(jobsSVC.editJobProperty).not.toHaveBeenCalled();
+    });
+
     it('status 는 PATCH 로 바꿀 수 없어 400 이다', async () => {
       await http()
         .patch(`/jobs/${ID}`)
-        .send({ status: JobStatus.completed })
+        .send({ version: 1, status: JobStatus.completed })
         .expect(400);
 
       expect(jobsSVC.editJobProperty).not.toHaveBeenCalled();
@@ -205,23 +240,51 @@ describe('JobsController', () => {
 
       const res = await http()
         .patch(`/jobs/${ID}`)
-        .send({ title: '새 제목' })
+        .send({ version: 1, title: '새 제목' })
         .expect(409);
 
       expect(res.body.message).toContain('처리중인 작업은 수정할 수 없습니다.');
     });
+
+    it('version 이 어긋나면 409 와 현재/요청 version 을 알려준다', async () => {
+      jobsSVC.editJobProperty.mockRejectedValue(
+        new ConflictException('버전이 일치하지 않습니다. current=3, request=1'),
+      );
+
+      const res = await http()
+        .patch(`/jobs/${ID}`)
+        .send({ version: 1, title: '새 제목' })
+        .expect(409);
+
+      expect(res.body.message).toContain(
+        '버전이 일치하지 않습니다. current=3, request=1',
+      );
+    });
   });
 
   describe('PATCH /jobs/:id/cancel', () => {
-    it('취소된 job 을 반환한다', async () => {
+    it('바디의 version 을 서비스로 넘기고 취소된 job 을 반환한다', async () => {
       jobsSVC.changeStatusCancel.mockResolvedValue(
-        job({ status: JobStatus.canceled }),
+        job({ status: JobStatus.canceled, version: 2 }),
       );
 
-      const res = await http().patch(`/jobs/${ID}/cancel`).expect(200);
+      const res = await http()
+        .patch(`/jobs/${ID}/cancel`)
+        .send({ version: 1 })
+        .expect(200);
 
       expect(res.body.status).toBe(JobStatus.canceled);
-      expect(jobsSVC.changeStatusCancel).toHaveBeenCalledWith(ID);
+      expect(res.body.version).toBe(2);
+      expect(jobsSVC.changeStatusCancel).toHaveBeenCalledWith(ID, 1);
+    });
+
+    it.each([
+      ['바디가 비어 있으면', {}],
+      ['version 이 숫자가 아니면', { version: '1' }],
+    ])('%s 400 이고 서비스를 호출하지 않는다', async (_, body) => {
+      await http().patch(`/jobs/${ID}/cancel`).send(body).expect(400);
+
+      expect(jobsSVC.changeStatusCancel).not.toHaveBeenCalled();
     });
 
     it('취소할 수 없는 상태면 409 이다', async () => {
@@ -229,20 +292,41 @@ describe('JobsController', () => {
         new ConflictException('대기/처리중인 작업만 취소 가능합니다'),
       );
 
-      await http().patch(`/jobs/${ID}/cancel`).expect(409);
+      await http().patch(`/jobs/${ID}/cancel`).send({ version: 1 }).expect(409);
+    });
+
+    it('version 이 어긋나면 409 이다', async () => {
+      jobsSVC.changeStatusCancel.mockRejectedValue(
+        new ConflictException('버전이 일치하지 않습니다. current=2, request=1'),
+      );
+
+      await http().patch(`/jobs/${ID}/cancel`).send({ version: 1 }).expect(409);
     });
   });
 
   describe('PATCH /jobs/:id/wait', () => {
-    it('대기로 돌아온 job 을 반환한다', async () => {
+    it('바디의 version 을 서비스로 넘기고 대기로 돌아온 job 을 반환한다', async () => {
       jobsSVC.changeStatusWait.mockResolvedValue(
-        job({ status: JobStatus.waiting }),
+        job({ status: JobStatus.waiting, version: 3 }),
       );
 
-      const res = await http().patch(`/jobs/${ID}/wait`).expect(200);
+      const res = await http()
+        .patch(`/jobs/${ID}/wait`)
+        .send({ version: 2 })
+        .expect(200);
 
       expect(res.body.status).toBe(JobStatus.waiting);
-      expect(jobsSVC.changeStatusWait).toHaveBeenCalledWith(ID);
+      expect(res.body.version).toBe(3);
+      expect(jobsSVC.changeStatusWait).toHaveBeenCalledWith(ID, 2);
+    });
+
+    it.each([
+      ['바디가 비어 있으면', {}],
+      ['version 이 숫자가 아니면', { version: '2' }],
+    ])('%s 400 이고 서비스를 호출하지 않는다', async (_, body) => {
+      await http().patch(`/jobs/${ID}/wait`).send(body).expect(400);
+
+      expect(jobsSVC.changeStatusWait).not.toHaveBeenCalled();
     });
 
     it('복구할 수 없는 상태면 409 이다', async () => {
@@ -250,7 +334,15 @@ describe('JobsController', () => {
         new ConflictException('취소된 작업만 복구 가능합니다.'),
       );
 
-      await http().patch(`/jobs/${ID}/wait`).expect(409);
+      await http().patch(`/jobs/${ID}/wait`).send({ version: 1 }).expect(409);
+    });
+
+    it('version 이 어긋나면 409 이다', async () => {
+      jobsSVC.changeStatusWait.mockRejectedValue(
+        new ConflictException('버전이 일치하지 않습니다. current=5, request=1'),
+      );
+
+      await http().patch(`/jobs/${ID}/wait`).send({ version: 1 }).expect(409);
     });
   });
 
@@ -261,6 +353,11 @@ describe('JobsController', () => {
         name: '400 (DTO 검증)',
         status: 400,
         call: () => http().patch(`/jobs/${ID}`).send({}),
+      },
+      {
+        name: '400 (version 누락)',
+        status: 400,
+        call: () => http().patch(`/jobs/${ID}/cancel`).send({}),
       },
       {
         name: '400 (uuid 형식)',
@@ -282,7 +379,19 @@ describe('JobsController', () => {
           jobsSVC.changeStatusCancel.mockRejectedValue(
             new ConflictException('대기/처리중인 작업만 취소 가능합니다'),
           );
-          return http().patch(`/jobs/${ID}/cancel`);
+          return http().patch(`/jobs/${ID}/cancel`).send({ version: 1 });
+        },
+      },
+      {
+        name: '409 (version 불일치)',
+        status: 409,
+        call: () => {
+          jobsSVC.changeStatusCancel.mockRejectedValue(
+            new ConflictException(
+              '버전이 일치하지 않습니다. current=2, request=1',
+            ),
+          );
+          return http().patch(`/jobs/${ID}/cancel`).send({ version: 1 });
         },
       },
     ];

@@ -7,6 +7,7 @@ export enum JobStatus {
 
 export type Job = {
   id: string;
+  version: number;
   title: string;
   description?: string;
   status: JobStatus;
@@ -28,6 +29,9 @@ export type SearchJobQuery = {
 };
 
 export type EditJobProperty = {
+  version: number;
   title?: string;
   description?: string;
 };
+
+export type UpdateJobData = Partial<Omit<Job, 'id' | 'version'>>;

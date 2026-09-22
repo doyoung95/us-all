@@ -18,6 +18,7 @@ import {
   Job,
   JobStatus,
   SearchJobQuery,
+  UpdateJobData,
 } from './types/jobs.types.js';
 
 @Injectable()
@@ -30,6 +31,44 @@ export class JobsService {
     private readonly logger: AppLogger,
   ) {}
 
+  private validateVersion(job: Job, requestedVersion: number) {
+    if (job.version !== requestedVersion) {
+      throw new ConflictException(
+        `버전이 일치하지 않습니다. current=${job.version}, request=${requestedVersion}`,
+      );
+    }
+  }
+
+  omitMeta(job: Job): UpdateJobData {
+    const { id: _, version: __, ...jobWithoutId } = job;
+    return jobWithoutId;
+  }
+
+  async updateJob(
+    idx: number,
+    job: Job,
+    patchData: UpdateJobData,
+  ): Promise<Job> {
+    const nextVersion = job.version + 1;
+
+    const updatedJob = {
+      ...job,
+      ...patchData,
+      version: nextVersion,
+    };
+
+    await this.db.push(
+      `/list[${idx}]`,
+      {
+        ...patchData,
+        version: nextVersion,
+      },
+      false,
+    );
+
+    return updatedJob;
+  }
+
   async onModuleInit() {
     try {
       await this.db.getData('/list[0]');
@@ -38,20 +77,12 @@ export class JobsService {
     }
   }
 
-  async putRecover(job: Job) {
-    const { idx } = await this.getJob(job.id);
-    await this.db.push(`/list[${idx}]`, job, true);
-  }
-
-  async editStatusByIdx(idx: number, status: JobStatus) {
-    await this.db.push(`/list[${idx}]`, { status }, false);
-  }
-
   async create(data: CreateJob) {
     try {
       const id = randomUUID();
-      const job = {
+      const job: Job = {
         id,
+        version: 1,
         title: data.title,
         description: data.description,
         status: JobStatus.waiting,
@@ -107,8 +138,11 @@ export class JobsService {
   }
 
   async editJobProperty(id: string, data: EditJobProperty) {
+    const { version, ...properties } = data;
     return this.mutexManager.run<Job>(id, async () => {
       const { idx, job } = await this.getJob(id);
+
+      this.validateVersion(job, version);
 
       switch (job.status) {
         case JobStatus.completed:
@@ -119,24 +153,26 @@ export class JobsService {
       }
 
       const patchData = Object.fromEntries(
-        Object.entries(data).filter(([_, value]) => value !== undefined),
+        Object.entries(properties).filter(([_, value]) => value !== undefined),
       );
 
-      await this.db.push(`/list[${idx}]`, patchData, false);
+      const updatedJob = await this.updateJob(idx, job, patchData);
 
       this.logger.log('job.updated', {
         jobId: id,
         fields: Object.keys(patchData).join(','),
       });
 
-      return { ...job, ...patchData };
+      return updatedJob;
     });
   }
 
-  // TODO job 버전 관리 필요
-  async changeStatusCancel(id: string) {
+  async changeStatusCancel(id: string, version: number) {
     return this.mutexManager.run<Job>(id, async () => {
       const { idx, job } = await this.getJob(id);
+
+      this.validateVersion(job, version);
+
       if (
         job.status !== JobStatus.waiting &&
         job.status !== JobStatus.pending
@@ -144,26 +180,33 @@ export class JobsService {
         throw new ConflictException('대기/처리중인 작업만 취소 가능합니다');
       }
 
-      await this.editStatusByIdx(idx, JobStatus.canceled);
+      const updatedJob = await this.updateJob(idx, job, {
+        status: JobStatus.canceled,
+      });
 
       this.logger.log('job.canceled', { jobId: id, from: job.status });
 
-      return { ...job, status: JobStatus.canceled };
+      return updatedJob;
     });
   }
 
-  async changeStatusWait(id: string) {
+  async changeStatusWait(id: string, version: number) {
     return this.mutexManager.run<Job>(id, async () => {
       const { idx, job } = await this.getJob(id);
+
+      this.validateVersion(job, version);
+
       if (job.status !== JobStatus.canceled) {
         throw new ConflictException('취소된 작업만 복구 가능합니다.');
       }
 
-      await this.editStatusByIdx(idx, JobStatus.waiting);
+      const updatedJob = await this.updateJob(idx, job, {
+        status: JobStatus.waiting,
+      });
 
       this.logger.log('job.waiting.restored', { jobId: id });
 
-      return { ...job, status: JobStatus.waiting };
+      return updatedJob;
     });
   }
 }
