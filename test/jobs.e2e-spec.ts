@@ -283,9 +283,9 @@ describe('Jobs (e2e)', () => {
       );
     });
 
-    it('처리 중 취소하면 완료로 덮이지 않고 원본이 복구된다', async () => {
+    it('처리 중 취소하면 워커가 완료로 덮지 않는다', async () => {
       const created = await createJob();
-      await ctx.setProcessingTime(created.id, 0.4);
+      await ctx.setProcessingTime(created.id, 0.3);
 
       await ctx.tick();
       await http()
@@ -293,12 +293,46 @@ describe('Jobs (e2e)', () => {
         .send({ version: 2 })
         .expect(200);
 
-      // 선점(2) → 취소(3) → 처리 완료 시점의 원본 복구(4)
-      await waitFor(async () => (await getJob(created.id)).version === 4);
+      // 아무 일도 일어나지 않아야 하는 구간이라 waitFor 가 아니라 처리 시간만큼 기다린다
+      await new Promise((resolve) => setTimeout(resolve, 600));
 
+      // 선점(2) → 취소(3) 에서 멈춘다. 워커의 선점 version 은 취소가 무효화했다
       expect(await getJob(created.id)).toMatchObject({
         title: created.title,
         status: JobStatus.canceled,
+        version: 3,
+      });
+      expect(await ctx.recoverSVC.getRecover(created.id)).toBeNull();
+    });
+
+    it('처리 중 취소 후 수정한 내용이 워커에 의해 되돌려지지 않는다', async () => {
+      const created = await createJob();
+      await ctx.setProcessingTime(created.id, 0.3);
+
+      await ctx.tick();
+      await http()
+        .patch(`/jobs/${created.id}/cancel`)
+        .send({ version: 2 })
+        .expect(200);
+
+      // canceled 는 수정이 허용된 상태라 클라이언트는 200 을 받는다
+      const edited = await http()
+        .patch(`/jobs/${created.id}`)
+        .send({ version: 3, title: '사용자가 고친 제목' })
+        .expect(200);
+      expect(edited.body).toMatchObject({
+        title: '사용자가 고친 제목',
+        version: 4,
+      });
+
+      // 아무 일도 일어나지 않아야 하는 구간이라 waitFor 가 아니라 처리 시간만큼 기다린다
+      await new Promise((resolve) => setTimeout(resolve, 600));
+
+      // 200 으로 확정된 수정이 워커 때문에 사라지면 lost update 다
+      expect(await getJob(created.id)).toMatchObject({
+        title: '사용자가 고친 제목',
+        status: JobStatus.canceled,
+        version: 4,
       });
       expect(await ctx.recoverSVC.getRecover(created.id)).toBeNull();
     });
@@ -367,31 +401,29 @@ describe('Jobs (e2e)', () => {
       processingTime: 5,
     };
 
-    /** 처리 도중 프로세스가 죽은 직후의 디스크 상태 */
-    const seedCrashedState = async (dir: string, status: JobStatus) => {
-      await jobsDBAt(dir).push('/list', [
-        { ...origin, version: 2, title: '변경된 제목', status },
-      ]);
-      await recoversDBAt(dir).push('/list', { [ID]: origin });
-    };
-
-    it.each([
-      [JobStatus.pending, JobStatus.waiting],
-      [JobStatus.canceled, JobStatus.canceled],
-    ])('%s 로 남아 있던 job 은 재기동 시 %s 로 복구된다', async (from, to) => {
-      // beforeEach 로 뜬 앱은 쓰지 않고, 죽은 상태를 심은 새 디렉터리로 다시 띄운다
+    /**
+     * 프로세스가 죽은 직후의 디스크 상태를 심고 앱을 다시 띄운다.
+     * recover 행은 항상 선점 이전 스냅샷(version 1)이므로,
+     * job 쪽 version 을 몇으로 심느냐가 "죽기 전에 어디까지 진행됐는지" 를 정한다
+     */
+    const restartWith = async (current: Partial<Job>) => {
       await ctx.close();
       removeDataDir(dataDir);
 
       dataDir = createDataDir();
-      await seedCrashedState(dataDir, from);
+      await jobsDBAt(dataDir).push('/list', [{ ...origin, ...current }]);
+      await recoversDBAt(dataDir).push('/list', { [ID]: origin });
       ctx = await createE2EApp(dataDir);
+    };
 
-      const recovered = await getJob(ID);
-      expect(recovered).toMatchObject({
+    it('선점 직후 죽은 job 은 재기동 시 waiting 으로 되돌아간다', async () => {
+      // 선점(2) 까지만 진행된 상태 = 스냅샷(1) + 1
+      await restartWith({ version: 2, status: JobStatus.pending });
+
+      expect(await getJob(ID)).toMatchObject({
         title: '원본 제목',
-        status: to,
-        // 값은 원본으로 되돌려도 version 은 되돌리지 않는다
+        status: JobStatus.waiting,
+        // status 만 되돌리고 version 은 되돌리지 않는다
         version: 3,
       });
       expect(await ctx.recoverSVC.getRecover(ID)).toBeNull();
@@ -403,18 +435,37 @@ describe('Jobs (e2e)', () => {
         .expect(409);
     });
 
-    it('복구 대상이 아닌 job 은 그대로 두고 찌꺼기 recover 만 지운다', async () => {
-      await ctx.close();
-      removeDataDir(dataDir);
+    it.each([
+      ['취소', JobStatus.canceled],
+      ['완료', JobStatus.completed],
+    ])(
+      '죽기 전에 %s 까지 진행된 job 은 되돌리지 않고 찌꺼기 recover 만 지운다',
+      async (_, status) => {
+        // 선점(2) 다음 상태 변경(3) 까지 갔으므로 스냅샷 + 1 이 아니다
+        await restartWith({ version: 3, status });
 
-      dataDir = createDataDir();
-      await seedCrashedState(dataDir, JobStatus.completed);
-      ctx = await createE2EApp(dataDir);
+        expect(await getJob(ID)).toMatchObject({
+          title: '원본 제목',
+          status,
+          version: 3,
+        });
+        expect(await ctx.recoverSVC.getRecover(ID)).toBeNull();
+      },
+    );
 
+    it('선점 이후 수정된 job 은 재기동해도 수정 내용이 유지된다', async () => {
+      // 선점(2) → 취소(3) → 사용자 수정(4) 까지 간 상태에서 죽은 디스크
+      await restartWith({
+        version: 4,
+        title: '사용자가 고친 제목',
+        status: JobStatus.canceled,
+      });
+
+      // 스냅샷을 덮어쓰면 200 으로 확정됐던 수정이 재기동 때 사라진다
       expect(await getJob(ID)).toMatchObject({
-        title: '변경된 제목',
-        status: JobStatus.completed,
-        version: 2,
+        title: '사용자가 고친 제목',
+        status: JobStatus.canceled,
+        version: 4,
       });
       expect(await ctx.recoverSVC.getRecover(ID)).toBeNull();
     });

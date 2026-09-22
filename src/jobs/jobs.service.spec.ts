@@ -91,38 +91,6 @@ describe('JobsService', () => {
     });
   });
 
-  describe('omitMeta', () => {
-    it('id 와 version 을 뺀 나머지 필드만 남긴다', () => {
-      const origin = job({ id: 'origin', version: 9, title: '원본 제목' });
-
-      expect(service.omitMeta(origin)).toEqual({
-        title: '원본 제목',
-        status: JobStatus.waiting,
-        reservationTime: 0,
-        processingTime: 1,
-      });
-    });
-
-    it('원본 복구 시 대상 job 의 id/version 은 유지된다', async () => {
-      await seed([
-        job({ version: 5, title: '변경된 제목', status: JobStatus.pending }),
-      ]);
-      const { idx, job: current } = await service.getJob('a');
-      // 리커버 데이터는 선점 이전 시점이라 version 이 뒤처져 있다
-      const recoverJob = job({ version: 1, title: '원본 제목' });
-
-      const restored = await service.updateJob(idx, current, {
-        ...service.omitMeta(recoverJob),
-        status: JobStatus.waiting,
-      });
-
-      expect(restored).toEqual(
-        job({ version: 6, title: '원본 제목', status: JobStatus.waiting }),
-      );
-      expect(await find()).toEqual(restored);
-    });
-  });
-
   describe('searchJobs', () => {
     beforeEach(() =>
       seed([
@@ -179,6 +147,23 @@ describe('JobsService', () => {
         });
       },
     );
+
+    it('title 과 description 을 한 번에 수정할 수 있다', async () => {
+      await seed([job({ title: '기존 제목', description: '기존 설명' })]);
+
+      const edited = await service.editJobProperty('a', {
+        version: 1,
+        title: '새 제목',
+        description: '새 설명',
+      });
+
+      expect(edited).toMatchObject({
+        title: '새 제목',
+        description: '새 설명',
+        version: 2,
+      });
+      expect(await find()).toEqual(edited);
+    });
 
     it.each([JobStatus.pending, JobStatus.completed])(
       '%s 상태는 수정할 수 없다',

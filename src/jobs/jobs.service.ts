@@ -39,11 +39,6 @@ export class JobsService {
     }
   }
 
-  omitMeta(job: Job): UpdateJobData {
-    const { id: _, version: __, ...jobWithoutId } = job;
-    return jobWithoutId;
-  }
-
   async updateJob(
     idx: number,
     job: Job,

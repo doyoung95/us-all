@@ -3,7 +3,6 @@ import { Cron } from '@nestjs/schedule';
 import { RuntimeService } from '../common/runtime/runtime.service.js';
 import { AppLogger } from '../logger/app-logger.service.js';
 import { MutexManager } from '../util/mutex-manager.js';
-import { JOB_RECOVER_STATUS_TRANSITIONS } from './jobs.constants.js';
 import { JobsService } from './jobs.service.js';
 import { JOB_MUTEX_MANAGER } from './jobs.token.js';
 import { RecoverJobService } from './recover-job/recover-job.service.js';
@@ -43,30 +42,29 @@ export class JobsScheduler {
         try {
           const { idx, job } = await this.jobsSVC.getJob(recoverJob.id);
 
-          const toStatus = JOB_RECOVER_STATUS_TRANSITIONS[job.status];
-          if (!toStatus) {
-            await this.recoverSVC.removeRecover(job.id);
-
-            this.logger.warn('job.recovered.cleanup', {
-              jobId: recoverJob.id,
-              from: job.status,
+          // pending update 전 recover 저장하기 때문에 +1
+          const claimedVersion = recoverJob.version + 1;
+          if (job.version !== claimedVersion) {
+            this.logger.warn('job.recovered.stale', {
+              jobId: job.id,
+              claimed: claimedVersion,
+              current: job.version,
+              status: job.status,
             });
+            await this.recoverSVC.removeRecover(job.id);
             return;
           }
 
-          // pending 상태일 경우 waiting으로 원본 복구
-          // cancel 상태일 경우 원본 복구 후 canceled 유지
-          const recoverJobWithoutId = this.jobsSVC.omitMeta(recoverJob);
+          // 무조건 pending 상태. waiting으로 변경
           await this.jobsSVC.updateJob(idx, job, {
-            ...recoverJobWithoutId,
-            status: toStatus,
+            status: JobStatus.waiting,
           });
 
           await this.recoverSVC.removeRecover(job.id);
           this.logger.log('job.recovered', {
             jobId: recoverJob.id,
             from: job.status,
-            to: toStatus,
+            to: JobStatus.waiting,
           });
         } catch (error) {
           failedCount++;
@@ -99,45 +97,27 @@ export class JobsScheduler {
     }
   }
 
-  private async completeJob(completedJob: Job) {
-    await this.mutexManager.run(completedJob.id, async () => {
-      const { idx, job } = await this.jobsSVC.getJob(completedJob.id);
-      // pending 작업의 경우 완료 처리
-      if (job.status === JobStatus.pending) {
-        await this.jobsSVC.updateJob(idx, job, {
-          status: JobStatus.completed,
+  private async completeJob(claimedJob: Job) {
+    await this.mutexManager.run(claimedJob.id, async () => {
+      const { idx, job } = await this.jobsSVC.getJob(claimedJob.id);
+      // 선점한 후 버전이 바뀐 경우 종료 (pending -> canceled -> waiting -> property -> ...)
+      if (job.version !== claimedJob.version) {
+        this.logger.warn('job.complete.stale', {
+          jobId: job.id,
+          claimed: claimedJob.version,
+          current: job.version,
+          status: job.status,
         });
-
         await this.recoverSVC.removeRecover(job.id);
-        this.logger.log('job.completed', { jobId: job.id });
         return;
       }
-
-      // canceled 작업의 경우 원본 복구 후 canceled 유지
-      if (job.status === JobStatus.canceled) {
-        const recoverJob = await this.recoverSVC.getRecover(job.id);
-        if (!recoverJob) {
-          this.logger.error('job.recover.missing', undefined, {
-            jobId: job.id,
-          });
-          return;
-        }
-        const recoverJobWithoutId = this.jobsSVC.omitMeta(recoverJob);
-        await this.jobsSVC.updateJob(idx, job, {
-          ...recoverJobWithoutId,
-          status: JobStatus.canceled,
-        });
-
-        await this.recoverSVC.removeRecover(job.id);
-        this.logger.log('job.canceled.restored', { jobId: job.id });
-        return;
-      }
-
-      // 처리 중에 상태가 또 바뀐 경우 (예: 취소 후 재대기) 아무것도 커밋하지 않는다
-      this.logger.warn('job.complete.skipped', {
-        jobId: job.id,
-        status: job.status,
+      // 버전이 같으면 무조건 pending
+      await this.jobsSVC.updateJob(idx, job, {
+        status: JobStatus.completed,
       });
+
+      await this.recoverSVC.removeRecover(job.id);
+      this.logger.log('job.completed', { jobId: job.id });
     });
   }
 

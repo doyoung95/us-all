@@ -94,39 +94,66 @@ describe('JobsScheduler', () => {
     new JobsScheduler(runtimeSVC, jobsSVC, recoverSVC, mutexManager, logger);
 
   describe('부팅 리커버리', () => {
-    // JOB_RECOVER_STATUS_TRANSITIONS 기준 (null = 복구 대상 아님)
-    it.each([
-      [JobStatus.pending, JobStatus.waiting],
-      [JobStatus.canceled, JobStatus.canceled],
-      [JobStatus.waiting, null],
-      [JobStatus.completed, null],
-    ])('%s 상태의 job 은 %s 로 복구된다', async (from, to) => {
-      await seed([job({ version: 2, title: '변경된 제목', status: from })]);
-      await recoverSVC.genRecover(job({ title: '원본 제목' }));
+    // 복구 여부는 status 가 아니라 version 으로 판단한다.
+    // recover 는 선점 이전 스냅샷이고 선점이 version 을 1 올리므로,
+    // "현재 version === 스냅샷 + 1" 이면 선점 직후 그대로 죽은 것이다
+    it('선점 직후 죽은 job 은 waiting 으로 되돌린다', async () => {
+      await seed([job({ version: 2, status: JobStatus.pending })]);
+      await recoverSVC.genRecover(job());
 
       await newScheduler().onApplicationBootstrap();
 
-      if (!to) {
-        // 복구 대상이 아니면 job 은 그대로 두고 찌꺼기 recover 만 정리한다
-        expect(await jobOf()).toEqual(
-          job({ version: 2, title: '변경된 제목', status: from }),
-        );
-        expect(await recoverSVC.getRecover('a')).toBeNull();
-        return;
-      }
-
-      // 원본 값으로 되돌리되 version 은 되돌리지 않고 1 올린다
+      // status 만 되돌리고 version 은 되돌리지 않고 1 올린다
       expect(await jobOf()).toEqual(
-        job({ version: 3, title: '원본 제목', status: to }),
+        job({ version: 3, status: JobStatus.waiting }),
+      );
+      expect(await recoverSVC.getRecover('a')).toBeNull();
+    });
+
+    // 선점 이후 뭐라도 쓰였으면 version 이 스냅샷 + 1 을 넘어간다.
+    // 스냅샷으로 되돌리면 그 쓰기를 지우므로 job 은 그대로 두고 recover 만 버린다
+    it.each([
+      ['취소된', job({ version: 3, status: JobStatus.canceled })],
+      ['완료된', job({ version: 3, status: JobStatus.completed })],
+      // genRecover 직후 선점 쓰기 전에 죽으면 version 이 스냅샷과 같다
+      ['선점 전에 죽어 recover 만 남은', job()],
+    ])('%s job 은 되돌리지 않고 찌꺼기 recover 만 지운다', async (_, current) => {
+      await seed([current]);
+      await recoverSVC.genRecover(job());
+
+      await newScheduler().onApplicationBootstrap();
+
+      expect(await jobOf()).toEqual(current);
+      expect(await recoverSVC.getRecover('a')).toBeNull();
+    });
+
+    it('선점 이후 수정된 job 은 재기동해도 수정 내용이 유지된다', async () => {
+      // 선점(2) → 취소(3) → 사용자 수정(4) 까지 간 상태에서 프로세스가 죽은 디스크
+      await seed([
+        job({
+          version: 4,
+          title: '사용자가 고친 제목',
+          status: JobStatus.canceled,
+        }),
+      ]);
+      await recoverSVC.genRecover(job({ title: '원래 제목' }));
+
+      await newScheduler().onApplicationBootstrap();
+
+      // 스냅샷을 그대로 덮어쓰면 200 으로 확정됐던 수정이 재기동 때 사라진다
+      expect(await jobOf()).toEqual(
+        job({
+          version: 4,
+          title: '사용자가 고친 제목',
+          status: JobStatus.canceled,
+        }),
       );
       expect(await recoverSVC.getRecover('a')).toBeNull();
     });
 
     it('복구된 job 은 이전 version 으로 수정할 수 없다', async () => {
-      await seed([
-        job({ version: 2, title: '변경된 제목', status: JobStatus.pending }),
-      ]);
-      await recoverSVC.genRecover(job({ title: '원본 제목' }));
+      await seed([job({ version: 2, status: JobStatus.pending })]);
+      await recoverSVC.genRecover(job());
 
       await newScheduler().onApplicationBootstrap();
 
@@ -155,21 +182,17 @@ describe('JobsScheduler', () => {
     });
 
     it('job 이 없는 recover 데이터는 건너뛰고 나머지를 복구한다', async () => {
-      await seed([job({ id: 'b', status: JobStatus.pending })]);
+      // 선점이 version 을 올리므로 pending 은 스냅샷(1) + 1 인 2 여야 한다
+      await seed([job({ id: 'b', version: 2, status: JobStatus.pending })]);
       // 'a' 는 job 이 지워져 복구할 대상이 없는 찌꺼기
       await recoverSVC.genRecover(job({ id: 'a' }));
-      await recoverSVC.genRecover(job({ id: 'b', title: '원본 제목' }));
+      await recoverSVC.genRecover(job({ id: 'b' }));
 
       const booting = newScheduler();
       await booting.onApplicationBootstrap();
 
       expect(await jobOf('b')).toEqual(
-        job({
-          id: 'b',
-          version: 2,
-          title: '원본 제목',
-          status: JobStatus.waiting,
-        }),
+        job({ id: 'b', version: 3, status: JobStatus.waiting }),
       );
       expect(await recoverSVC.getRecover('b')).toBeNull();
       expect(booting.isRecovered).toBe(true);
@@ -243,7 +266,7 @@ describe('JobsScheduler', () => {
       expect(await db.getData('/list')).toEqual(jobs);
     });
 
-    it('처리 중에 취소되면 원본을 복구하고 canceled 를 유지한다', async () => {
+    it('처리 중에 취소되면 워커가 아무것도 커밋하지 않는다', async () => {
       await seed([job()]);
 
       await scheduler.consume();
@@ -254,10 +277,38 @@ describe('JobsScheduler', () => {
         setTimeout(resolve, PROCESSING_SEC * 1000 + 100),
       );
 
-      // completed 로 덮어쓰지 않고, 원본 값으로 되돌린 뒤 canceled 유지
-      // version 은 선점(2) / 취소(3) / 원본 복구(4) 로 계속 올라간다
+      // 취소가 version 을 올렸으므로 워커의 선점 version(2) 은 더 이상 유효하지 않다.
+      // completed 로 덮지도, 선점 시점 값으로 되돌리지도 않고 취소 결과(3)에서 멈춘다
       expect(await jobOf()).toEqual(
-        job({ version: 4, status: JobStatus.canceled }),
+        job({ version: 3, status: JobStatus.canceled }),
+      );
+      expect(await recoverSVC.getRecover('a')).toBeNull();
+    });
+
+    it('처리 중 취소 후 수정한 내용을 낡은 워커가 되돌리지 않는다', async () => {
+      await seed([job({ title: '원래 제목' })]);
+
+      await scheduler.consume();
+      await jobsSVC.changeStatusCancel('a', 2);
+
+      // canceled 는 수정이 허용된 상태다 (editJobProperty 가 막는 건 pending / completed)
+      const edited = await jobsSVC.editJobProperty('a', {
+        version: 3,
+        title: '사용자가 고친 제목',
+      });
+      expect(edited).toMatchObject({ title: '사용자가 고친 제목', version: 4 });
+
+      // 선점 시점 스냅샷을 그대로 덮어쓰면 여기서 수정이 사라진다
+      await new Promise((resolve) =>
+        setTimeout(resolve, PROCESSING_SEC * 1000 + 100),
+      );
+
+      expect(await jobOf()).toEqual(
+        job({
+          version: 4,
+          title: '사용자가 고친 제목',
+          status: JobStatus.canceled,
+        }),
       );
       expect(await recoverSVC.getRecover('a')).toBeNull();
     });
@@ -316,7 +367,7 @@ describe('JobsScheduler', () => {
       expect(await recoverSVC.getRecover('a')).toBeNull();
     });
 
-    it('낡은 워커는 완료를 커밋하지 않는다', async () => {
+    it('취소 후 재대기했으면 낡은 워커가 완료로 덮지 않는다', async () => {
       await seed([job()]);
 
       await scheduler.consume();
