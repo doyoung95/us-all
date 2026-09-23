@@ -88,15 +88,44 @@ export class JobsScheduler {
 
     this.recovered = true;
   }
+  private async recoverFailedJob(claimedJob: Job) {
+    await this.mutexManager.run(claimedJob.id, async () => {
+      try {
+        const { idx, job } = await this.jobsSVC.getJob(claimedJob.id);
+
+        // 처리중 버전 바껴있는 경우
+        if (claimedJob.version !== job.version) {
+          this.logger.warn('job.recover.skipped', {
+            jobId: job.id,
+            claimed: claimedJob.version,
+            current: job.version,
+            status: job.status,
+          });
+          await this.recoverSVC.removeRecover(job.id);
+          return;
+        }
+
+        // 버전 변경 없을 경우 pending => waiting만 수행
+
+        await this.jobsSVC.updateJob(idx, job, { status: JobStatus.waiting });
+        await this.recoverSVC.removeRecover(job.id);
+        this.logger.log('job.process.recovered', { jobId: job.id });
+      } catch (err) {
+        this.logger.error('job.process.recovery.failed', err, {
+          jobId: claimedJob.id,
+        });
+      }
+    });
+  }
 
   private async processJob(job: Job) {
     try {
       await process(job.processingTime);
       await this.completeJob(job);
     } catch (error) {
-      // TODO 실패한 job 상태 복구
       // TODO 재시도 횟수 + 초과시 알림
       this.logger.error('job.process.failed', error, { jobId: job.id });
+      await this.recoverFailedJob(job);
     } finally {
       // 처리 완료시 제거
       this.processingSet.delete(job.id);

@@ -117,15 +117,18 @@ describe('JobsScheduler', () => {
       ['완료된', job({ version: 3, status: JobStatus.completed })],
       // genRecover 직후 선점 쓰기 전에 죽으면 version 이 스냅샷과 같다
       ['선점 전에 죽어 recover 만 남은', job()],
-    ])('%s job 은 되돌리지 않고 찌꺼기 recover 만 지운다', async (_, current) => {
-      await seed([current]);
-      await recoverSVC.genRecover(job());
+    ])(
+      '%s job 은 되돌리지 않고 찌꺼기 recover 만 지운다',
+      async (_, current) => {
+        await seed([current]);
+        await recoverSVC.genRecover(job());
 
-      await newScheduler().onApplicationBootstrap();
+        await newScheduler().onApplicationBootstrap();
 
-      expect(await jobOf()).toEqual(current);
-      expect(await recoverSVC.getRecover('a')).toBeNull();
-    });
+        expect(await jobOf()).toEqual(current);
+        expect(await recoverSVC.getRecover('a')).toBeNull();
+      },
+    );
 
     it('선점 이후 수정된 job 은 재기동해도 수정 내용이 유지된다', async () => {
       // 선점(2) → 취소(3) → 사용자 수정(4) 까지 간 상태에서 프로세스가 죽은 디스크
@@ -435,6 +438,56 @@ describe('JobsScheduler', () => {
       });
 
       await done('b');
+    });
+  });
+
+  describe('처리 실패 복구', () => {
+    // process() 는 setTimeout 이라 실패하지 않는다.
+    // 완료 커밋을 실패시켜 processJob 의 catch 경로를 태운다.
+    // 쓰기 전에 실패하면 version 이 그대로이고, 쓴 뒤에 실패하면 version 이 올라간다
+    const failCompleteWrite = (when: 'before' | 'after') => {
+      const origin = jobsSVC.updateJob.bind(jobsSVC);
+      jobsSVC.updateJob = async (idx, current, patchData) => {
+        if (patchData.status !== JobStatus.completed) {
+          return origin(idx, current, patchData);
+        }
+        if (when === 'after') await origin(idx, current, patchData);
+        throw new Error('완료 처리 실패');
+      };
+    };
+
+    it('처리 중 실패하면 waiting 으로 되돌리고 recover 를 지운다', async () => {
+      await seed([job()]);
+      failCompleteWrite('before');
+
+      await scheduler.consume();
+      expect(await statusOf()).toBe(JobStatus.pending);
+
+      // 실패하면 pending 에 갇히지 않고 다시 대기열로 돌아와야 한다
+      await waitFor(async () => (await statusOf()) === JobStatus.waiting);
+
+      // 선점(2) → 실패 복구(3). 값은 그대로 두고 status 만 되돌린다
+      expect(await jobOf()).toEqual(
+        job({ version: 3, status: JobStatus.waiting }),
+      );
+      expect(await recoverSVC.getRecover('a')).toBeNull();
+    });
+
+    it('완료가 이미 쓰인 뒤 실패했으면 되돌리지 않는다', async () => {
+      await seed([job()]);
+      // 완료 커밋은 성공했는데 그 뒤 후속 처리에서 실패한 상황
+      failCompleteWrite('after');
+
+      await scheduler.consume();
+      await new Promise((resolve) =>
+        setTimeout(resolve, PROCESSING_SEC * 1000 + 100),
+      );
+
+      // 완료 쓰기가 version 을 올렸으므로 워커의 선점 티켓은 이미 무효다.
+      // 여기서 waiting 으로 되돌리면 끝난 작업이 되살아나 다시 처리된다
+      expect(await jobOf()).toEqual(
+        job({ version: 3, status: JobStatus.completed }),
+      );
     });
   });
 });
