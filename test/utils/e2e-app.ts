@@ -3,7 +3,7 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 import { Test } from '@nestjs/testing';
 import { mkdtempSync, rmSync } from 'fs';
 import { AddressInfo } from 'net';
-import { Config, JsonDB } from 'node-json-db';
+import { ConfigWithAdapter, JsonAdapter, JsonDB } from 'node-json-db';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import request from 'supertest';
@@ -13,14 +13,26 @@ import { JobsScheduler } from '../../src/jobs/jobs.scheduler.js';
 import { JobsService } from '../../src/jobs/jobs.service.js';
 import { RecoverJobService } from '../../src/jobs/recover-job/recover-job.service.js';
 import { AppLogger } from '../../src/logger/app-logger.service.js';
+import { AtomicFileAdapter } from '../../src/util/atomic-file.adapter.js';
 
 export const createDataDir = () => mkdtempSync(join(tmpdir(), 'jobs-e2e-'));
 
 export const removeDataDir = (dir: string) =>
   rmSync(dir, { recursive: true, force: true });
 
+/**
+ * 서비스와 같은 방식으로 DB 를 만든다.
+ * 다르게 만들면 부하 수치가 실제 쓰기 경로(임시 파일 + fsync + rename)를 반영하지 못하고,
+ * 배선 실수도 테스트가 잡지 못한다
+ */
 const openDB = (dir: string, name: string) =>
-  new JsonDB(new Config(join(dir, name), true, false, '/'));
+  new JsonDB(
+    new ConfigWithAdapter(
+      new JsonAdapter(new AtomicFileAdapter(join(dir, `${name}.json`)), false),
+      true,
+      '/',
+    ),
+  );
 
 // 앱이 뜨기 전에 "죽은 시점의 디스크 상태" 를 직접 만들어 둘 때 쓴다
 export const jobsDBAt = (dir: string) => openDB(dir, 'jobs');

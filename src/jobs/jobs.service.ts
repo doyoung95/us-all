@@ -6,9 +6,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { Config, JsonDB } from 'node-json-db';
+import { ConfigWithAdapter, JsonAdapter, JsonDB } from 'node-json-db';
 import { RuntimeService } from '../common/runtime/runtime.service.js';
 import { AppLogger } from '../logger/app-logger.service.js';
+import { AtomicFileAdapter } from '../util/atomic-file.adapter.js';
 import { MutexManager } from '../util/mutex-manager.js';
 import { random } from '../util/random.js';
 import { JOB_MUTEX_MANAGER } from './jobs.token.js';
@@ -23,7 +24,13 @@ import {
 
 @Injectable()
 export class JobsService {
-  private readonly db = new JsonDB(new Config('data/jobs', true, false, '/'));
+  private readonly db = new JsonDB(
+    new ConfigWithAdapter(
+      new JsonAdapter(new AtomicFileAdapter('data/jobs.json'), false),
+      true,
+      '/',
+    ),
+  );
   constructor(
     private runtimeSVC: RuntimeService,
     @Inject(JOB_MUTEX_MANAGER)

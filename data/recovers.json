@@ -1,1 +1,12 @@
-{"list":{}}
+{
+  "list": {
+    "9cbd3820-01e2-4ace-b752-0cbeabcb5ce5": {
+      "id": "9cbd3820-01e2-4ace-b752-0cbeabcb5ce5",
+      "version": 1,
+      "title": "검색 인덱스 재생성",
+      "status": "waiting",
+      "processingTime": 12,
+      "reservationTime": 3
+    }
+  }
+}

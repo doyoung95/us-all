@@ -1,11 +1,16 @@
 import { Injectable } from '@nestjs/common';
-import { Config, JsonDB } from 'node-json-db';
+import { ConfigWithAdapter, JsonAdapter, JsonDB } from 'node-json-db';
+import { AtomicFileAdapter } from '../../util/atomic-file.adapter.js';
 import { Job } from '../types/jobs.types.js';
 
 @Injectable()
 export class RecoverJobService {
   private readonly db = new JsonDB(
-    new Config('data/recovers', true, false, '/'),
+    new ConfigWithAdapter(
+      new JsonAdapter(new AtomicFileAdapter('data/recovers.json'), false),
+      true,
+      '/',
+    ),
   );
   constructor() {}
 
